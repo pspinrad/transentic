@@ -3,3 +3,6 @@ ignore/
 
 # Virtual environment contents
 backend/venv/
+
+# Node modules / dependency software
+node_modules/
