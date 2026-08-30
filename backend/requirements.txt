@@ -1,0 +1,27 @@
+# Transcription (local, CPU-friendly Whisper via CTranslate2)
+faster-whisper>=1.0.3
+
+# Audio speech-emotion classification
+transformers>=4.44.2
+torch>=2.2.0
+soundfile>=0.12.1
+huggingface_hub>=0.23.0
+safetensors>=0.4.0
+
+# Facial expression recognition (video only)
+# DeepFace (actively maintained, unlike the fer package this app originally
+# used). mtcnn is pre-installed explicitly so DeepFace doesn't attempt to
+# pip-install it itself at runtime on first use.
+deepface>=0.0.93
+mtcnn>=0.1.1
+opencv-python-headless>=4.9.0
+tensorflow>=2.16.0
+tf-keras>=2.16.0
+
+# Misc
+numpy>=1.26.4
+
+# System dependency (not pip-installable): ffmpeg + ffprobe must be on PATH.
+# macOS:   brew install ffmpeg
+# Ubuntu:  sudo apt install ffmpeg
+# Windows: https://ffmpeg.org/download.html

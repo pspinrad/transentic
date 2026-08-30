@@ -1,0 +1,12 @@
+{
+  "name": "enhanced-transcript",
+  "version": "0.1.0",
+  "description": "Local audio/video transcription with per-word sentiment-driven text styling",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^44.0.0"
+  }
+}

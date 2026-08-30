@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Enhanced Transcript</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <div id="app">
+
+    <!-- ============ SOURCE PANE ============ -->
+    <section id="source-pane" class="pane">
+      <div id="source-empty" class="empty-state">
+        <p class="empty-title">No media loaded</p>
+        <p class="empty-hint">File → Open Media File… (⌘O)</p>
+      </div>
+
+      <div id="source-loaded" class="hidden">
+        <header class="media-header">
+          <div class="media-title" id="media-title">—</div>
+          <div class="media-subtitle" id="media-subtitle"></div>
+        </header>
+
+        <div id="video-wrap" class="hidden">
+          <video id="video-el"></video>
+        </div>
+        <audio id="audio-el" class="hidden"></audio>
+
+        <div class="progress-row">
+          <div id="progress-track" class="progress-track">
+            <canvas id="progress-samples" class="progress-samples"></canvas>
+            <div id="progress-fill" class="progress-fill"></div>
+            <div id="progress-handle" class="progress-handle"></div>
+          </div>
+          <div class="time-row">
+            <span id="time-current">0:00</span>
+            <span id="time-total">0:00</span>
+          </div>
+        </div>
+
+        <div class="controls-row">
+          <div class="controls-left">
+            <select id="speed-select" class="speed-select" title="Playback speed"></select>
+          </div>
+          <div class="controls-center">
+            <button id="btn-rewind" class="ctl-btn" title="Rewind 30s">
+              <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M11.99 5V1l-5 5 5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6h-2c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+              <span class="ctl-label">30</span>
+            </button>
+            <button id="btn-playpause" class="ctl-btn ctl-btn-primary" title="Play/Pause">
+              <svg id="icon-play" viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+              <svg id="icon-pause" viewBox="0 0 24 24" width="26" height="26" class="hidden"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+            </button>
+            <button id="btn-forward" class="ctl-btn" title="Skip ahead 30s">
+              <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12.01 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>
+              <span class="ctl-label">30</span>
+            </button>
+          </div>
+          <div class="controls-right"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TRANSCRIPT PANE ============ -->
+    <section id="transcript-pane" class="pane">
+      <header class="transcript-header">
+        <span class="transcript-title">Transcript</span>
+        <button id="btn-settings" class="icon-btn" title="Sentiment styling settings">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19.14 12.94a7.14 7.14 0 0 0 .06-.94 7.14 7.14 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.62-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.4.32.6.22l2.39-.96c.49.38 1.03.7 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.2.1.46.02.6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
+        </button>
+      </header>
+
+      <div id="transcript-empty" class="empty-state">
+        <p class="empty-title">Nothing to transcribe yet</p>
+        <p class="empty-hint">Open a media file to generate an enhanced transcript</p>
+      </div>
+
+      <div id="transcript-processing" class="empty-state hidden">
+        <p class="empty-title">Analyzing…</p>
+        <p class="empty-hint" id="processing-detail">Transcribing speech and scoring sentiment locally</p>
+      </div>
+
+      <div id="transcript-error" class="empty-state hidden">
+        <p class="empty-title error-text" id="transcript-error-text"></p>
+      </div>
+
+      <div id="transcript-body" class="transcript-body hidden"></div>
+    </section>
+
+  </div>
+
+  <!-- ============ SETTINGS MODAL ============ -->
+  <div id="settings-overlay" class="overlay hidden">
+    <div class="settings-modal">
+      <h2>Sentiment Styling</h2>
+      <p class="settings-hint">Assign each sentiment a text styling and how strongly it responds. With every sensitivity at 0, the transcript renders as plain text.</p>
+
+      <table class="settings-table">
+        <thead>
+          <tr><th>Sentiment</th><th>Styling</th><th>Sensitivity</th></tr>
+        </thead>
+        <tbody id="settings-table-body"></tbody>
+      </table>
+
+      <div class="settings-actions">
+        <button id="btn-restore-defaults" class="btn btn-ghost">Restore Defaults</button>
+        <div class="spacer"></div>
+        <button id="btn-settings-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="btn-settings-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- window.APP_SETTINGS is injected by preload.js from config/settings.json -->
+  <script src="styling-engine.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

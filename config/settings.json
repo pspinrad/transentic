@@ -1,0 +1,52 @@
+{
+  "SENTIMENTS": ["Happy", "Sad", "Surprised", "Angry", "Fearful", "Disgusted"],
+  "STYLINGS": [
+    "R-text", "G-text", "B-text",
+    "R-bkgnd", "G-bkgnd", "B-bkgnd",
+    "Size", "Weight", "Underline",
+    "Forward-slant", "Backward-slant", "Baseline-bounce"
+  ],
+
+  "min_font_size": 12,
+  "max_font_size": 24,
+
+  "min_font_weight": 400,
+  "max_font_weight": 900,
+
+  "min_underline_gray": 250,
+  "max_underline_gray": 0,
+
+  "max_forward_slant": 8,
+  "max_backwards_slant": 8,
+
+  "max_baseline_bounce_em": 1,
+
+  "min_text_channel": 0,
+  "max_text_channel": 220,
+
+  "min_bkgnd_channel": 255,
+  "max_bkgnd_channel": 210,
+
+  "wordless_sample_rate_sec": 3,
+  "skip_interval_sec": 10,
+
+  "default_sensitivity": 0.5,
+  "sensitivity_gain_multiplier": 2,
+  "response_curve_k": 12,
+
+  "default_styling_map": {
+    "Happy": "Size",
+    "Sad": "B-text",
+    "Surprised": "Baseline-bounce",
+    "Angry": "R-text",
+    "Fearful": "Backward-slant",
+    "Disgusted": "G-bkgnd"
+  },
+
+  "seek_step_sec": 30,
+  "playback_speeds": [1.75, 1.5, 1.25, 1.0, 0.75],
+  "default_speed": 1.0,
+
+  "error_fully_unprocessable": "This recording does not contain people speaking clearly enough to generate an enhanced transcription.",
+  "error_partial_gap_inline": "[This part of the recording does not contain people speaking clearly enough to generate an enhanced transcription...]"
+}
