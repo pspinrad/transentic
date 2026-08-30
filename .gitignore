@@ -1,2 +1,5 @@
 # Contents of ignore directory
 ignore/
+
+# Virtual environment contents
+backend/venv/
