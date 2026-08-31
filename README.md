@@ -1,4 +1,4 @@
-# Enhanced Transcript
+# Transentic: Transcription with Feeling
 
 A desktop app (Electron) that transcribes an audio or video file and renders
 the transcript with per-word text styling driven by moment-by-moment
@@ -7,7 +7,7 @@ sentiment/expression analysis, run entirely locally.
 ## Architecture
 
 ```
-enhanced-transcript-app/
+transentic/
 ├── config/settings.json     # single source of truth for every tunable constant
 ├── main.js                  # Electron main process: window, File menu, IPC, save/load
 ├── preload.js                # exposes a safe IPC + settings surface to the renderer

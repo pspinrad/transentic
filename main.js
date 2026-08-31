@@ -112,7 +112,7 @@ async function handleOpenMedia() {
 
 async function handleOpenSavedTranscript() {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Open Saved Enhanced Transcript',
+    title: 'Open Saved Senticscript',
     properties: ['openFile'],
     filters: [{ name: 'Transcript sidecar', extensions: ['json'] }]
   });
@@ -133,7 +133,7 @@ ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
     const scriptPath = path.join(__dirname, 'backend', 'analyze.py');
     const outputPath = path.join(
       os.tmpdir(),
-      `enhanced-transcript-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+      `transentic-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
     );
     // Force the arm64 slice explicitly. Universal (fat) Python binaries pick
     // their executing architecture based on inherited process/shell state at
@@ -185,7 +185,7 @@ ipcMain.handle('file:saveTranscript', async (_evt, { markdown, sidecar, suggeste
   let basePath;
   if (forceDialog || !sidecar.savedPath) {
     const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'Save Enhanced Transcript',
+      title: 'Save Senticscript',
       defaultPath: suggestedName || 'transcript.md',
       filters: [{ name: 'Markdown', extensions: ['md'] }]
     });

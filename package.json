@@ -1,5 +1,5 @@
 {
-  "name": "enhanced-transcript",
+  "name": "transentic",
   "version": "0.1.0",
   "description": "Local audio/video transcription with per-word sentiment-driven text styling",
   "main": "main.js",

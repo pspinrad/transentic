@@ -7,8 +7,8 @@
     "Forward-slant", "Backward-slant", "Baseline-bounce"
   ],
 
-  "min_font_size": 12,
-  "max_font_size": 24,
+  "min_font_size": 14,
+  "max_font_size": 20,
 
   "min_font_weight": 400,
   "max_font_weight": 900,
@@ -16,10 +16,10 @@
   "min_underline_gray": 250,
   "max_underline_gray": 0,
 
-  "max_forward_slant": 8,
-  "max_backwards_slant": 8,
+  "max_forward_slant": 14,
+  "max_backwards_slant": 14,
 
-  "max_baseline_bounce_em": 1,
+  "max_baseline_bounce_em": 0.5,
 
   "min_text_channel": 0,
   "max_text_channel": 220,
@@ -36,7 +36,7 @@
 
   "default_styling_map": {
     "Happy": "Size",
-    "Sad": "B-text",
+    "Sad": "Weight",
     "Surprised": "Baseline-bounce",
     "Angry": "R-text",
     "Fearful": "Backward-slant",
