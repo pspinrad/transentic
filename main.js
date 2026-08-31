@@ -2,7 +2,6 @@ const { app, BrowserWindow, Menu, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 let mainWindow;
@@ -114,16 +113,34 @@ async function handleOpenSavedTranscript() {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Open Saved Senticscript',
     properties: ['openFile'],
-    filters: [{ name: 'Transcript sidecar', extensions: ['json'] }]
+    // Electron's dialog filters match a simple final extension, not a
+    // compound suffix like "senticscript.md" — so this will also list
+    // plain unrelated .md files. extractSenticscriptJson() below throws a
+    // clear, specific error if someone picks one that isn't actually a
+    // senticscript, which is an acceptable trade for cross-platform
+    // filter reliability.
+    filters: [{ name: 'Senticscript', extensions: ['md'] }]
   });
   if (result.canceled || result.filePaths.length === 0) return;
-  const sidecarPath = result.filePaths[0];
+  const filePath = result.filePaths[0];
   try {
-    const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf-8'));
-    mainWindow.webContents.send('transcript:loaded', { sidecarPath, sidecar });
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const sidecar = extractSenticscriptJson(raw);
+    mainWindow.webContents.send('transcript:loaded', { sidecarPath: filePath, sidecar });
   } catch (e) {
-    dialog.showErrorBox('Could not open transcript', e.message);
+    dialog.showErrorBox('Could not open senticscript', e.message);
   }
+}
+
+// Pulls the fenced ```json ... ``` block back out of a senticscript file.
+// Written to appear at the bottom, but matched generically here in case of
+// manual edits/reordering — this just finds the first such block.
+function extractSenticscriptJson(raw) {
+  const match = raw.match(/```json\s*\n([\s\S]*?)\n```/);
+  if (!match) {
+    throw new Error('No JSON sentiment-data block found in this file — is it actually a .senticscript.md file?');
+  }
+  return JSON.parse(match[1]);
 }
 
 // --- IPC: kick off backend analysis of a media file ---
@@ -180,33 +197,37 @@ ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
   });
 });
 
-// --- IPC: save transcript + sidecar to disk ---
-ipcMain.handle('file:saveTranscript', async (_evt, { markdown, sidecar, suggestedName, forceDialog }) => {
-  let basePath;
-  if (forceDialog || !sidecar.savedPath) {
+// --- IPC: save a senticscript (transcript + sentiment data, one file) ---
+ipcMain.handle('file:saveTranscript', async (_evt, { fileContent, suggestedName, forceDialog, currentSavedPath }) => {
+  let filePath;
+  if (forceDialog || !currentSavedPath) {
     const result = await dialog.showSaveDialog(mainWindow, {
       title: 'Save Senticscript',
-      defaultPath: suggestedName || 'transcript.md',
-      filters: [{ name: 'Markdown', extensions: ['md'] }]
+      defaultPath: suggestedName || 'transcript.senticscript.md',
+      // See the matching comment in handleOpenSavedTranscript() — Electron
+      // filters match a simple final extension, so this just offers .md;
+      // the .senticscript part comes from defaultPath's suggested name and
+      // is preserved below if the OS's save panel leaves it intact.
+      filters: [{ name: 'Senticscript', extensions: ['md'] }]
     });
     if (result.canceled || !result.filePath) return { canceled: true };
-    basePath = result.filePath.replace(/\.md$/i, '');
+    filePath = ensureSenticscriptExtension(result.filePath);
   } else {
-    basePath = sidecar.savedPath.replace(/\.sentiment\.json$/i, '');
+    filePath = currentSavedPath;
   }
 
-  const mdPath = `${basePath}.md`;
-  const jsonPath = `${basePath}.sentiment.json`;
-
-  if (!sidecar.guid) sidecar.guid = crypto.randomUUID();
-  sidecar.savedPath = jsonPath;
-  sidecar.transcriptPath = mdPath;
-
-  fs.writeFileSync(mdPath, markdown, 'utf-8');
-  fs.writeFileSync(jsonPath, JSON.stringify(sidecar, null, 2), 'utf-8');
-
-  return { canceled: false, mdPath, jsonPath, guid: sidecar.guid };
+  fs.writeFileSync(filePath, fileContent, 'utf-8');
+  return { canceled: false, filePath };
 });
+
+// Some save panels normalize/strip a suggested compound extension like
+// ".senticscript.md" down to just ".md" — this restores it if that happens,
+// so files stay consistently and recognizably named.
+function ensureSenticscriptExtension(filePath) {
+  if (filePath.toLowerCase().endsWith('.senticscript.md')) return filePath;
+  if (filePath.toLowerCase().endsWith('.md')) return filePath.slice(0, -3) + '.senticscript.md';
+  return `${filePath}.senticscript.md`;
+}
 
 app.whenReady().then(createWindow);
 

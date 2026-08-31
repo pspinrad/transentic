@@ -47,6 +47,6 @@
   "playback_speeds": [1.75, 1.5, 1.25, 1.0, 0.75],
   "default_speed": 1.0,
 
-  "error_fully_unprocessable": "This recording does not contain people speaking clearly enough to generate an enhanced transcription.",
-  "error_partial_gap_inline": "[This part of the recording does not contain people speaking clearly enough to generate an enhanced transcription...]"
+  "error_fully_unprocessable": "This recording does not contain people speaking clearly enough to generate a senticscript.",
+  "error_partial_gap_inline": "[This part of the recording does not contain people speaking clearly enough to generate a senticscript...]"
 }

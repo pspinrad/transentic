@@ -451,15 +451,33 @@
   }
 
   // ---------------------------------------------------------------------
-  // Save / load transcript files
+  // Save / load senticscript files
+  //
+  // A senticscript is one plain-text .senticscript.md file: a one-line HTML
+  // comment, the readable transcript (so that's the first real thing a
+  // person sees whether they use Transentic, a plain text editor, or a
+  // Markdown viewer), then a fenced ```json block at the bottom carrying
+  // everything needed to reload it (timings, sentiment data, the styling
+  // config active when it was saved, and a link back to the source media).
+  // The double extension (.senticscript.md) is deliberate: every OS's
+  // file-type association looks only at the final extension, so this opens
+  // in whichever Markdown/text editor is already the person's default,
+  // with zero setup — while still being clearly labeled by sight.
   // ---------------------------------------------------------------------
+  const SENTICSCRIPT_COMMENT =
+    '<!-- Word-by-word sentiment data in JSON format immediately follows the transcription below. -->';
+
   async function saveTranscript(forceDialog) {
     if (!state.analysis) return;
 
-    const markdown = buildMarkdown(state.analysis.segments || []);
+    // crypto.randomUUID() here is the browser's built-in WebCrypto API
+    // (available in any Chromium renderer regardless of Node/sandbox
+    // settings) — not Node's crypto module, which the renderer can't
+    // access directly.
+    if (!state.guid) state.guid = crypto.randomUUID();
+
     const sidecar = {
       guid: state.guid,
-      savedPath: state.savedPath,
       sourceFilePath: state.filePath,
       mediaKind: state.mediaKind,
       metadata: state.analysis.metadata || {},
@@ -468,12 +486,30 @@
       config: state.config
     };
 
-    const suggestedName = (state.filePath.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'transcript') + '.md';
-    const result = await window.electronAPI.saveTranscript({ markdown, sidecar, suggestedName, forceDialog });
+    const fileContent = buildSenticscriptFile(state.analysis.segments || [], sidecar);
+    const suggestedName = (state.filePath.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'transcript') + '.senticscript.md';
+
+    const result = await window.electronAPI.saveTranscript({
+      fileContent, suggestedName, forceDialog, currentSavedPath: state.savedPath
+    });
     if (!result.canceled) {
-      state.guid = result.guid;
-      state.savedPath = result.jsonPath;
+      state.savedPath = result.filePath;
     }
+  }
+
+  function buildSenticscriptFile(segments, sidecar) {
+    const markdown = buildMarkdown(segments);
+    const jsonBlock = JSON.stringify(sidecar, null, 2);
+    return [
+      SENTICSCRIPT_COMMENT,
+      '',
+      markdown,
+      '',
+      '```json',
+      jsonBlock,
+      '```',
+      ''
+    ].join('\n');
   }
 
   function buildMarkdown(segments) {
@@ -490,9 +526,9 @@
     return lines.join('\n\n');
   }
 
-  function loadFromSidecar(sidecarPath, sidecar) {
+  function loadFromSidecar(filePath, sidecar) {
     state.guid = sidecar.guid;
-    state.savedPath = sidecarPath;
+    state.savedPath = filePath;
     state.filePath = sidecar.sourceFilePath;
     state.mediaKind = sidecar.mediaKind;
     state.config = sidecar.config || state.config;
