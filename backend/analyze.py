@@ -53,6 +53,21 @@ import os
 import json
 import subprocess
 import tempfile
+import signal
+
+# By default, SIGTERM (what a plain `kill <pid>` sends, and what Electron's
+# before-quit handler sends) terminates the process immediately at the OS
+# level WITHOUT running any Python-level cleanup — with blocks' __exit__,
+# finally clauses, etc. never execute. That matters here because
+# analyze_media() uses tempfile.TemporaryDirectory() to hold the extracted
+# audio.wav; an abrupt kill would leave that directory behind. Installing a
+# handler that raises SystemExit instead makes SIGTERM unwind the stack
+# through normal Python exception handling, so that cleanup actually runs.
+def _handle_sigterm(signum, frame):
+    raise SystemExit(0)
+
+
+signal.signal(signal.SIGTERM, _handle_sigterm)
 
 # Must be set before TensorFlow is imported anywhere in this process
 # (DeepFace, used for video facial-expression sampling, imports it lazily

@@ -143,6 +143,11 @@ function extractSenticscriptJson(raw) {
   return JSON.parse(match[1]);
 }
 
+// Tracks the currently-running backend analysis process (only ever one at
+// a time in this app) so it can be killed cleanly — both by the app-quit
+// handler below, and later by an actual Cancel button.
+let currentAnalysisProcess = null;
+
 // --- IPC: kick off backend analysis of a media file ---
 ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
   return new Promise((resolve, reject) => {
@@ -164,7 +169,15 @@ ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
     const args = useArchWrapper
       ? ['-arm64', pythonBin, scriptPath, filePath, outputPath]
       : [scriptPath, filePath, outputPath];
-    const proc = spawn(command, args, { cwd: __dirname });
+    // detached: true makes this child the leader of its own new process
+    // group (POSIX) rather than sharing Electron's. That matters because
+    // analyze.py itself spawns ffmpeg as a genuine child subprocess — if we
+    // only ever signal this top-level process, ffmpeg would be orphaned
+    // and keep running pointlessly rather than dying with it. Killing by
+    // negative PID (see killCurrentAnalysisProcess() below) signals the
+    // whole group — this process and any children it spawned — in one shot.
+    const proc = spawn(command, args, { cwd: __dirname, detached: true });
+    currentAnalysisProcess = proc;
 
     let stderr = '';
     proc.stderr.on('data', (d) => { stderr += d.toString(); });
@@ -176,6 +189,7 @@ ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
     proc.stdout.on('data', () => {});
 
     proc.on('close', (code) => {
+      if (currentAnalysisProcess === proc) currentAnalysisProcess = null;
       if (code !== 0) {
         reject(new Error(stderr || `analyze.py exited with code ${code}`));
         return;
@@ -229,6 +243,26 @@ function ensureSenticscriptExtension(filePath) {
   return `${filePath}.senticscript.md`;
 }
 
+// Kills the whole process group of any in-flight backend analysis — the
+// Python process and anything it spawned (ffmpeg) — rather than just the
+// top-level PID. Safe to call when nothing is running.
+function killCurrentAnalysisProcess(signal = 'SIGTERM') {
+  if (!currentAnalysisProcess || currentAnalysisProcess.killed) return;
+  try {
+    if (process.platform === 'win32') {
+      // Windows has no equivalent process-group-by-negative-PID concept;
+      // taskkill's /T flag kills the whole subtree instead.
+      spawn('taskkill', ['/pid', String(currentAnalysisProcess.pid), '/T', '/F']);
+    } else {
+      process.kill(-currentAnalysisProcess.pid, signal);
+    }
+  } catch (e) {
+    // ESRCH here just means it already exited on its own between the
+    // liveness check above and this call — not a real error.
+    if (e.code !== 'ESRCH') console.error('Failed to kill analysis process:', e);
+  }
+}
+
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
@@ -237,4 +271,11 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+
+// Without this, quitting mid-analysis would leave the Python process (and
+// any ffmpeg child it spawned) running as an orphan with no way to ever
+// deliver its result — this ensures it's actually terminated first.
+app.on('before-quit', () => {
+  killCurrentAnalysisProcess('SIGTERM');
 });
