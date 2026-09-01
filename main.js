@@ -4,6 +4,12 @@ const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 
+// Must be set before app is ready. Affects app.getName() everywhere,
+// including — on macOS — the bold application menu (leftmost, before
+// File/Edit/View) that Electron otherwise labels "Electron" in unpackaged
+// dev mode, since that's literally the bundle name `electron .` runs as.
+app.setName('Transentic');
+
 let mainWindow;
 
 function createWindow() {
@@ -49,7 +55,15 @@ function createWindow() {
 }
 
 function buildMenu() {
+  const isMac = process.platform === 'darwin';
   const template = [
+    // On macOS, Electron auto-inserts a bold app-name menu before this
+    // template's first entry if none is provided — but without an explicit
+    // role: 'appMenu' entry, that auto-generated one doesn't reliably pick
+    // up app.setName()'s value in dev mode. Being explicit fixes that;
+    // Electron fills in the standard About/Services/Hide/Quit items and
+    // labels the menu itself using the current app name automatically.
+    ...(isMac ? [{ role: 'appMenu' }] : []),
     {
       label: 'File',
       submenu: [
@@ -60,17 +74,17 @@ function buildMenu() {
         },
         { type: 'separator' },
         {
-          label: 'Save Transcript',
+          label: 'Save Senticscript',
           accelerator: 'CmdOrCtrl+S',
           click: () => mainWindow.webContents.send('menu:save', { saveAs: false })
         },
         {
-          label: 'Save Transcript As…',
+          label: 'Save Senticscript As…',
           accelerator: 'CmdOrCtrl+Shift+S',
           click: () => mainWindow.webContents.send('menu:save', { saveAs: true })
         },
         {
-          label: 'Open Saved Transcript…',
+          label: 'Open Saved Senticscript…',
           click: handleOpenSavedTranscript
         },
         { type: 'separator' },
@@ -89,6 +103,14 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// Tracked separately per Open operation (not shared) — opening a media
+// file and opening a saved senticscript are typically different folders in
+// practice, so remembering them independently is more useful than one
+// combined "last used" location. In-memory only: resets each app launch
+// rather than persisting to disk across restarts.
+let lastMediaOpenDirectory = null;
+let lastSenticscriptOpenDirectory = null;
+
 // NOTE ON FUTURE REMOTE/STREAMING SOURCES:
 // handleOpenMedia currently only resolves local file:// paths, but it returns
 // a normalized { sourceUri, sourceKind: 'local' } shape. When remote sources
@@ -98,6 +120,7 @@ function buildMenu() {
 async function handleOpenMedia() {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Open Audio or Video File',
+    defaultPath: lastMediaOpenDirectory || undefined,
     properties: ['openFile'],
     filters: [
       { name: 'Media', extensions: ['mp4', 'mov', 'mkv', 'webm', 'mp3', 'wav', 'm4a', 'flac'] }
@@ -106,12 +129,14 @@ async function handleOpenMedia() {
   if (result.canceled || result.filePaths.length === 0) return;
 
   const filePath = result.filePaths[0];
+  lastMediaOpenDirectory = path.dirname(filePath);
   mainWindow.webContents.send('media:opened', { filePath });
 }
 
 async function handleOpenSavedTranscript() {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Open Saved Senticscript',
+    defaultPath: lastSenticscriptOpenDirectory || undefined,
     properties: ['openFile'],
     // Electron's dialog filters match a simple final extension, not a
     // compound suffix like "senticscript.md" — so this will also list
@@ -123,6 +148,7 @@ async function handleOpenSavedTranscript() {
   });
   if (result.canceled || result.filePaths.length === 0) return;
   const filePath = result.filePaths[0];
+  lastSenticscriptOpenDirectory = path.dirname(filePath);
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     const sidecar = extractSenticscriptJson(raw);

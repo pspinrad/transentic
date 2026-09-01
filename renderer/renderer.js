@@ -290,7 +290,15 @@
     for (let t = seg.start; t < seg.end; t += step) {
       const span = document.createElement('span');
       span.className = 't-word t-gap-marker';
-      span.textContent = ' — ';
+      // U+25A1 WHITE SQUARE rather than a dash: a thin horizontal dash
+      // barely shows slant, weight, or other shape-based stylings at all,
+      // while a filled/outlined square has real width and height for them
+      // to visibly act on. Applied uniformly (not just for video, where
+      // these markers actually carry styled sentiment via DeepFace) since
+      // audio-only files' markers are always neutral anyway — one
+      // consistent marker character everywhere is simpler than switching
+      // between two depending on media kind.
+      span.textContent = ' \u25A1 ';
       span.dataset.start = t;
       span.dataset.end = Math.min(t + step, seg.end);
 
