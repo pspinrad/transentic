@@ -54,6 +54,7 @@ import json
 import subprocess
 import tempfile
 import signal
+import time
 
 # By default, SIGTERM (what a plain `kill <pid>` sends, and what Electron's
 # before-quit handler sends) terminates the process immediately at the OS
@@ -165,11 +166,17 @@ def compute_waveform_samples(wav_path, n_samples=200):
     return [round(s / max_peak, 4) for s in samples]
 
 
-def transcribe_with_word_timestamps(wav_path):
+def transcribe_with_word_timestamps(wav_path, progress_path=None, duration=None):
     """
     Returns a list of segments:
       {"start": f, "end": f, "avg_logprob": f,
        "words": [{"word": str, "start": f, "end": f}, ...]}
+
+    faster-whisper's transcribe() returns segments lazily — each one is
+    actually computed as this loop reaches it, not all up front — so
+    reporting progress per-segment here reflects genuinely how far through
+    the audio timeline transcription has gotten (seg.end / duration), not
+    just a crude before/after toggle for the whole stage.
     """
     from faster_whisper import WhisperModel
 
@@ -179,6 +186,7 @@ def transcribe_with_word_timestamps(wav_path):
     segments, _info = model.transcribe(wav_path, word_timestamps=True)
 
     result = []
+    last_write = 0.0
     for seg in segments:
         words = [{'word': w.word.strip(), 'start': w.start, 'end': w.end} for w in (seg.words or [])]
         result.append({
@@ -187,6 +195,11 @@ def transcribe_with_word_timestamps(wav_path):
             'avg_logprob': seg.avg_logprob,
             'words': words,
         })
+        now = time.monotonic()
+        if progress_path and duration and (now - last_write) >= PROGRESS_WRITE_INTERVAL_SEC:
+            fraction = min(1.0, seg.end / duration) if duration > 0 else 0.0
+            write_progress(progress_path, 'transcribing', fraction, detail='Transcribing speech…')
+            last_write = now
     return result
 
 
@@ -342,7 +355,53 @@ def average_sentiment_dicts(a, b):
     return {s: (a.get(s, 0.0) + b.get(s, 0.0)) / 2 for s in SENTIMENTS}
 
 
-def build_segments(whisper_segments, duration, media_kind, wav_path, video_path):
+# Minimum wall-clock time between progress-file writes. This is a time
+# throttle rather than "every N words" specifically because per-word
+# processing speed varies a lot (video with facial-expression sampling is
+# much slower per word than audio-only) — pacing by elapsed time keeps
+# updates readable (not flickering faster than a person can read the
+# numbers) and keeps the write overhead itself negligible, regardless of
+# how fast or slow the actual analysis is running.
+PROGRESS_WRITE_INTERVAL_SEC = 1.0
+
+# Rough relative time-share of each major stage, as fractions of the overall
+# 0-100 progress bar. These are approximate (not measured per-file) — good
+# enough to make the bar move in a representative way throughout the whole
+# pipeline instead of sitting at 0% through what's often the longest single
+# stage (transcription) and only starting to move once per-word sentiment
+# scoring begins. Tune these if real usage shows a stage taking much more
+# or less of the total time than this assumes.
+PHASE_RANGES = {
+    'extracting_audio': (0, 8),
+    'transcribing': (8, 45),
+    'scoring': (45, 100),
+}
+
+
+def write_progress(progress_path, phase, fraction=0.0, detail=None, current=None, total=None):
+    """Best-effort — a failure here should never break the actual analysis.
+    `fraction` is progress *within* the given phase (0-1); this maps it into
+    that phase's slice of the overall 0-100 range via PHASE_RANGES."""
+    if not progress_path:
+        return
+    lo, hi = PHASE_RANGES.get(phase, (0, 100))
+    percent = lo + (hi - lo) * max(0.0, min(1.0, fraction))
+    payload = {'phase': phase, 'percent': round(percent, 1)}
+    if detail is not None:
+        payload['detail'] = detail
+    if current is not None:
+        payload['current'] = current
+    if total is not None:
+        payload['total'] = total
+    try:
+        with open(progress_path, 'w') as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+
+def build_segments(whisper_segments, duration, media_kind, wav_path, video_path,
+                    progress_path=None, total_words=0):
     """
     Walks Whisper's segments in time order, filling any timing gap wider than
     a heartbeat with either a 'gap' (unprocessable) or 'silence' (processable
@@ -355,6 +414,9 @@ def build_segments(whisper_segments, duration, media_kind, wav_path, video_path)
 
     segments_out = []
     cursor = 0.0
+    words_done = 0
+    last_progress_write = 0.0
+    write_progress(progress_path, 'scoring', 0.0, current=0, total=total_words)
 
     def flush_gap(gap_start, gap_end):
         if gap_end - gap_start < 1.0:
@@ -400,10 +462,18 @@ def build_segments(whisper_segments, duration, media_kind, wav_path, video_path)
                 sentiment = a_sent
             words_out.append({'word': w['word'], 'start': w['start'], 'end': w['end'], 'sentiment': sentiment})
 
+            words_done += 1
+            now = time.monotonic()
+            if now - last_progress_write >= PROGRESS_WRITE_INTERVAL_SEC:
+                fraction = words_done / total_words if total_words > 0 else 0.0
+                write_progress(progress_path, 'scoring', fraction, current=words_done, total=total_words)
+                last_progress_write = now
+
         segments_out.append({'type': 'words', 'words': words_out})
         cursor = seg['end']
 
     flush_gap(cursor, duration)
+    write_progress(progress_path, 'scoring', 1.0, current=total_words, total=total_words)
     return segments_out
 
 
@@ -434,19 +504,27 @@ def mark_unprocessable_segments(whisper_segments, duration):
     return whisper_segments
 
 
-def analyze_media(path):
+def analyze_media(path, progress_path=None):
     media_kind = 'video' if is_video_file(path) else 'audio'
 
+    # First write happens immediately, before ffprobe even runs, so the
+    # progress bar has something to show from essentially the moment the
+    # file is opened rather than sitting at 0% through the whole pipeline
+    # up until per-word scoring begins.
+    write_progress(progress_path, 'extracting_audio', 0.0, detail='Reading file info…')
     probe = ffprobe_json(path)
     metadata, duration = extract_metadata(probe)
 
     with tempfile.TemporaryDirectory() as tmp:
         wav_path = os.path.join(tmp, 'audio.wav')
+        write_progress(progress_path, 'extracting_audio', 0.3, detail='Extracting audio…')
         extract_audio_wav(path, wav_path)
+        write_progress(progress_path, 'extracting_audio', 1.0, detail='Extracting audio…')
 
         waveform = compute_waveform_samples(wav_path) if media_kind == 'audio' else []
 
-        whisper_segments = transcribe_with_word_timestamps(wav_path)
+        whisper_segments = transcribe_with_word_timestamps(wav_path, progress_path=progress_path, duration=duration)
+        write_progress(progress_path, 'transcribing', 1.0, detail='Transcribing speech…')
         whisper_segments = mark_unprocessable_segments(whisper_segments, duration)
 
         processable_word_count = sum(
@@ -463,7 +541,15 @@ def analyze_media(path):
                 'segments': [],
             }
 
-        segments = build_segments(whisper_segments, duration, media_kind, wav_path, path)
+        # Progress is reported in terms of words specifically (not the
+        # additional facial-expression sampling done during silent gaps in
+        # video files) — a reasonable approximation of overall progress
+        # without needing a more complex weighted unit, and it matches the
+        # "word N of M" phrasing surfaced in the UI.
+        segments = build_segments(
+            whisper_segments, duration, media_kind, wav_path, path,
+            progress_path=progress_path, total_words=processable_word_count
+        )
 
     return {
         'status': 'ok',
@@ -478,13 +564,14 @@ def analyze_media(path):
 
 def main():
     if len(sys.argv) < 3:
-        log('usage: analyze.py <media_path> <output_json_path>')
+        log('usage: analyze.py <media_path> <output_json_path> [progress_json_path]')
         sys.exit(1)
 
     path = sys.argv[1]
     output_path = sys.argv[2]
+    progress_path = sys.argv[3] if len(sys.argv) > 3 else None
     try:
-        result = analyze_media(path)
+        result = analyze_media(path, progress_path=progress_path)
     except Exception as e:
         log(f'analyze.py failed: {e}')
         raise

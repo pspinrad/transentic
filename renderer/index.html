@@ -79,6 +79,18 @@
       <div id="transcript-processing" class="empty-state hidden">
         <p class="empty-title">Analyzing…</p>
         <p class="empty-hint" id="processing-detail">Transcribing speech and scoring sentiment locally</p>
+        <div class="processing-progress-row">
+          <div class="processing-progress-track">
+            <div id="processing-progress-fill" class="processing-progress-fill"></div>
+          </div>
+          <button id="btn-cancel-analysis" class="btn btn-ghost">Cancel</button>
+        </div>
+        <p class="processing-progress-text" id="processing-progress-text"></p>
+      </div>
+
+      <div id="transcript-cancelled" class="empty-state hidden">
+        <p class="empty-title">Analysis cancelled</p>
+        <p class="empty-hint">Open a media file to try again</p>
       </div>
 
       <div id="transcript-error" class="empty-state hidden">

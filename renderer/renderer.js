@@ -61,6 +61,10 @@
 
   const transcriptEmpty = el('transcript-empty');
   const transcriptProcessing = el('transcript-processing');
+  const processingProgressFill = el('processing-progress-fill');
+  const processingProgressText = el('processing-progress-text');
+  const btnCancelAnalysis = el('btn-cancel-analysis');
+  const transcriptCancelled = el('transcript-cancelled');
   const transcriptError = el('transcript-error');
   const transcriptErrorText = el('transcript-error-text');
   const transcriptBody = el('transcript-body');
@@ -81,6 +85,7 @@
     // basic UI interactivity like the settings gear from working.
     wireSourceControls();
     wireSettingsModal();
+    btnCancelAnalysis.addEventListener('click', handleCancelAnalysis);
 
     if (!window.electronAPI) {
       console.error(
@@ -92,6 +97,7 @@
       window.electronAPI.onMediaOpened(({ filePath }) => openMedia(filePath));
       window.electronAPI.onMenuSave(({ saveAs }) => saveTranscript(saveAs));
       window.electronAPI.onTranscriptLoaded(({ sidecarPath, sidecar }) => loadFromSidecar(sidecarPath, sidecar));
+      window.electronAPI.onAnalysisProgress(updateProcessingProgress);
     }
 
     if (!S) {
@@ -130,15 +136,30 @@
     mediaTitleEl.textContent = filePath.split(/[\\/]/).pop();
     mediaSubtitleEl.textContent = 'Loading…';
 
+    resetProcessingProgress();
     showTranscriptState('processing', 'Transcribing speech and scoring sentiment locally…');
 
     try {
       const result = await window.electronAPI.analyzeMedia(filePath);
+      if (result.status === 'cancelled') {
+        showTranscriptState('cancelled');
+        return;
+      }
       state.analysis = result;
       applyAnalysisResult(result);
     } catch (err) {
       showTranscriptState('error', `Backend error: ${err.message}`);
     }
+  }
+
+  async function handleCancelAnalysis() {
+    btnCancelAnalysis.disabled = true; // prevent double-clicks while the request is in flight
+    processingProgressText.textContent = 'Cancelling…';
+    await window.electronAPI.cancelAnalysis();
+    // The pending analyzeMedia() promise in openMedia() resolves with
+    // {status: 'cancelled'} once the killed process actually exits, and
+    // that's what actually transitions the UI to the cancelled state —
+    // this handler just requests the kill and gives immediate feedback.
   }
 
   function applyAnalysisResult(result) {
@@ -160,12 +181,15 @@
   function showTranscriptState(which, message) {
     transcriptEmpty.classList.add('hidden');
     transcriptProcessing.classList.add('hidden');
+    transcriptCancelled.classList.add('hidden');
     transcriptError.classList.add('hidden');
     transcriptBody.classList.add('hidden');
 
     if (which === 'processing') {
       transcriptProcessing.classList.remove('hidden');
       if (message) el('processing-detail').textContent = message;
+    } else if (which === 'cancelled') {
+      transcriptCancelled.classList.remove('hidden');
     } else if (which === 'error') {
       transcriptError.classList.remove('hidden');
       transcriptErrorText.textContent = message;
@@ -173,6 +197,21 @@
       transcriptBody.classList.remove('hidden');
     } else {
       transcriptEmpty.classList.remove('hidden');
+    }
+  }
+
+  function resetProcessingProgress() {
+    processingProgressFill.style.width = '0%';
+    processingProgressText.textContent = 'Starting…';
+    btnCancelAnalysis.disabled = false;
+  }
+
+  function updateProcessingProgress({ phase, percent, detail, current, total }) {
+    processingProgressFill.style.width = `${Math.max(0, Math.min(100, percent || 0))}%`;
+    if (phase === 'scoring' && total > 0) {
+      processingProgressText.textContent = `Processed word ${current} of ${total}`;
+    } else if (detail) {
+      processingProgressText.textContent = detail;
     }
   }
 

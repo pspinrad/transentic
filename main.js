@@ -145,18 +145,24 @@ function extractSenticscriptJson(raw) {
 
 // Tracks the currently-running backend analysis process (only ever one at
 // a time in this app) so it can be killed cleanly — both by the app-quit
-// handler below, and later by an actual Cancel button.
+// handler below, and by the Cancel button.
 let currentAnalysisProcess = null;
+// Set by the cancel handler, checked in the close handler below so a
+// deliberate cancellation resolves as {status:'cancelled'} rather than
+// being treated like a real failure.
+let analysisCancelRequested = false;
 
 // --- IPC: kick off backend analysis of a media file ---
 ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
+  analysisCancelRequested = false;
+
   return new Promise((resolve, reject) => {
     const pythonBin = process.env.ETX_PYTHON || 'python3';
     const scriptPath = path.join(__dirname, 'backend', 'analyze.py');
-    const outputPath = path.join(
-      os.tmpdir(),
-      `transentic-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
-    );
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const outputPath = path.join(os.tmpdir(), `transentic-${runId}.json`);
+    const progressPath = path.join(os.tmpdir(), `transentic-progress-${runId}.json`);
+
     // Force the arm64 slice explicitly. Universal (fat) Python binaries pick
     // their executing architecture based on inherited process/shell state at
     // spawn time, which has proven inconsistent across terminal sessions in
@@ -167,8 +173,8 @@ ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
     const useArchWrapper = process.arch === 'arm64';
     const command = useArchWrapper ? 'arch' : pythonBin;
     const args = useArchWrapper
-      ? ['-arm64', pythonBin, scriptPath, filePath, outputPath]
-      : [scriptPath, filePath, outputPath];
+      ? ['-arm64', pythonBin, scriptPath, filePath, outputPath, progressPath]
+      : [scriptPath, filePath, outputPath, progressPath];
     // detached: true makes this child the leader of its own new process
     // group (POSIX) rather than sharing Electron's. That matters because
     // analyze.py itself spawns ffmpeg as a genuine child subprocess — if we
@@ -188,8 +194,39 @@ ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
     // outputPath, which is read directly below once the process exits.
     proc.stdout.on('data', () => {});
 
+    // Polls the progress file analyze.py writes to periodically. The
+    // write side is already time-throttled (~1/sec, see
+    // PROGRESS_WRITE_INTERVAL_SEC in analyze.py); this poll cadence just
+    // needs to be frequent enough to not visibly lag behind that, not to
+    // match it exactly. lastSent avoids re-notifying the renderer with
+    // identical values on ticks where nothing's actually changed yet.
+    let lastSent = null;
+    const progressInterval = setInterval(() => {
+      fs.readFile(progressPath, 'utf-8', (err, data) => {
+        if (err) return; // not written yet, or file gone — fine, skip this tick
+        let parsed;
+        try {
+          parsed = JSON.parse(data);
+        } catch (e) {
+          return; // caught mid-write; next tick will see a complete file
+        }
+        const key = `${parsed.phase}:${parsed.percent}`;
+        if (key === lastSent) return;
+        lastSent = key;
+        mainWindow.webContents.send('backend:progress', parsed);
+      });
+    }, 500);
+
     proc.on('close', (code) => {
       if (currentAnalysisProcess === proc) currentAnalysisProcess = null;
+      clearInterval(progressInterval);
+      fs.unlink(progressPath, () => {}); // best-effort cleanup, non-blocking
+
+      if (analysisCancelRequested) {
+        fs.unlink(outputPath, () => {}); // shouldn't exist yet, but just in case
+        resolve({ status: 'cancelled' });
+        return;
+      }
       if (code !== 0) {
         reject(new Error(stderr || `analyze.py exited with code ${code}`));
         return;
@@ -209,6 +246,13 @@ ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
       }
     });
   });
+});
+
+// --- IPC: cancel the in-flight analysis, if any ---
+ipcMain.handle('backend:cancel', async () => {
+  analysisCancelRequested = true;
+  killCurrentAnalysisProcess('SIGTERM');
+  return { ok: true };
 });
 
 // --- IPC: save a senticscript (transcript + sentiment data, one file) ---

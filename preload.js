@@ -13,7 +13,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMediaOpened: (cb) => ipcRenderer.on('media:opened', (_e, payload) => cb(payload)),
   onMenuSave: (cb) => ipcRenderer.on('menu:save', (_e, payload) => cb(payload)),
   onTranscriptLoaded: (cb) => ipcRenderer.on('transcript:loaded', (_e, payload) => cb(payload)),
+  onAnalysisProgress: (cb) => ipcRenderer.on('backend:progress', (_e, payload) => cb(payload)),
 
   analyzeMedia: (filePath) => ipcRenderer.invoke('backend:analyze', { filePath }),
+  cancelAnalysis: () => ipcRenderer.invoke('backend:cancel'),
   saveTranscript: (payload) => ipcRenderer.invoke('file:saveTranscript', payload)
 });
