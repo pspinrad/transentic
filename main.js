@@ -186,7 +186,14 @@ ipcMain.handle('backend:analyze', async (_evt, { filePath }) => {
     currentAnalysisProcess = proc;
 
     let stderr = '';
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.stderr.on('data', (d) => {
+      stderr += d.toString();
+      // Forward live to this process's own stderr, so Python's print()
+      // output (including [TIMING] diagnostic lines) actually shows up
+      // somewhere in real time — previously this was only ever surfaced
+      // after the fact, and only if the process exited with an error.
+      process.stderr.write(d);
+    });
     // stdout is intentionally not parsed for the result anymore — several
     // ML libraries in analyze.py's pipeline (Keras/TensorFlow in particular)
     // print their own progress output to stdout, which would corrupt a JSON

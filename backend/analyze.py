@@ -261,23 +261,35 @@ def _download_raw_state_dict(model_id):
         return load_file(path)
 
 
-def audio_sentiment_for_window(clf, wav_path, start, end, sample_rate=16000):
+
+def audio_sentiment_for_window(clf, sound_file, start, end):
     """
     Runs the audio-emotion classifier over a short window of raw audio
     centered on [start, end], widened slightly for stability on very short
     words, and returns a dict of the 6 Sentiments -> 0..1 scores.
-    """
-    import soundfile as sf
 
+    Takes an already-open soundfile.SoundFile (opened once for the whole
+    file — see build_segments()) rather than a path, avoiding the overhead
+    of opening a fresh file handle and re-parsing the WAV header on every
+    single word. Unlike video seeking, this isn't position-dependent (WAV's
+    uncompressed PCM data supports true O(1) random-access seeking
+    regardless of file size) — measured as already negligible (~0.2ms) even
+    before this change, so this is mainly for architectural consistency
+    with the video side rather than a measurable performance win on its own.
+    """
+    sample_rate = sound_file.samplerate
     pad = 0.5  # widen very short word clips so the classifier has enough signal
     win_start = max(0.0, start - pad)
     win_end = end + pad
+    start_frame = int(win_start * sample_rate)
+    stop_frame = int(win_end * sample_rate)
 
-    audio, sr = sf.read(wav_path, start=int(win_start * sample_rate), stop=int(win_end * sample_rate))
+    sound_file.seek(start_frame)
+    audio = sound_file.read(frames=max(0, stop_frame - start_frame))
     if len(audio) == 0:
         return {s: 0.0 for s in SENTIMENTS}
 
-    preds = clf({'array': audio, 'sampling_rate': sr})
+    preds = clf({'array': audio, 'sampling_rate': sample_rate})
     scores = {s: 0.0 for s in SENTIMENTS}
     for p in preds:
         mapped = AUDIO_EMOTION_LABEL_MAP.get(p['label'].lower())
@@ -286,11 +298,106 @@ def audio_sentiment_for_window(clf, wav_path, start, end, sample_rate=16000):
     return scores
 
 
-def video_sentiment_for_window(video_path, start, end, fps_sample=2):
+# Frames get downscaled to this before facial-expression analysis. Faces in
+# talking-head content are large relative to the frame, so this is generous
+# for detection accuracy while cutting DeepFace/MTCNN's cost dramatically —
+# their cost scales with total pixel count, and a 2880x2160 source (as
+# opposed to something like 720p) is ~6-7x more pixels than this cap, which
+# measured as almost the entire per-word processing time in practice (see
+# the TIMING diagnostics this was added alongside). Only ever shrinks,
+# never enlarges — a source already at or under this size is untouched.
+MAX_FRAME_DIMENSION = 720
+
+
+def _resize_for_analysis(frame, cv2):
+    h, w = frame.shape[:2]
+    longer_side = max(h, w)
+    if longer_side <= MAX_FRAME_DIMENSION:
+        return frame
+    scale = MAX_FRAME_DIMENSION / longer_side
+    new_w, new_h = int(w * scale), int(h * scale)
+    # INTER_AREA is the recommended interpolation for shrinking images —
+    # better quality than the faster alternatives for downscaling
+    # specifically, and still cheap relative to what it's saving downstream.
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+class SequentialVideoReader:
     """
-    Samples a few frames across [start, end], runs DeepFace's emotion
-    analysis on each, and averages the dominant face's scores across frames
-    into the 6 Sentiments.
+    Wraps a single cv2.VideoCapture opened once for the whole file, and
+    fetches frames by advancing forward from wherever it currently is
+    rather than re-seeking (cap.set(CAP_PROP_POS_FRAMES, ...)) for every
+    single sample — but only for *small* gaps (see LARGE_GAP_FRAME_THRESHOLD).
+
+    Reintroduced after the frame-downscaling fix (MAX_FRAME_DIMENSION,
+    below) made DeepFace's own cost small enough that per-word video
+    seeking became a meaningful fraction of total time again — measured at
+    growing from ~67ms to ~150ms over the course of a long file even after
+    downscaling, ~15-25% of the new, much smaller per-word total. Before
+    downscaling, that same growth was invisible against DeepFace's ~3000ms
+    dominating everything. With this fix in place, per-word video timing
+    stays flat throughout a run rather than climbing.
+
+    Background: seeking in most compressed video codecs isn't true random
+    access — the decoder has to locate the nearest preceding keyframe and
+    decode forward from there, and for files without a complete seek index,
+    some codecs fall back to an even more expensive linear scan from the
+    very start of the file. Re-seeking from scratch for every word means
+    that cost grows with how far into the file each word is.
+
+    The fix isn't simply "never seek, always read forward," though:
+    cap.read() fully decodes every frame it touches, even ones about to be
+    discarded, so sequential reads are only cheaper than a seek for *small*
+    gaps — a large gap (a pause, sentence break, or silence stretch) is
+    cheaper to reach via an actual seek than by decoding everything in
+    between one frame at a time.
+    """
+
+    # Larger than this many frames ahead, seek instead of reading forward
+    # frame-by-frame. ~2 seconds at a typical 30fps — small enough that
+    # consecutive close-together words (the common case) still avoid
+    # seeking entirely, large enough that any real pause or gap falls back
+    # to a seek instead of decoding potentially hundreds/thousands of
+    # throwaway frames.
+    LARGE_GAP_FRAME_THRESHOLD = 60
+
+    def __init__(self, video_path):
+        import cv2
+        self.cap = cv2.VideoCapture(video_path)
+        self.native_fps = self.cap.get(cv2.CAP_PROP_FPS) or 25
+        self.current_frame_index = -1  # nothing read yet
+
+    def get_frame_at_time(self, t):
+        import cv2
+        target_frame = int(t * self.native_fps)
+        frame_gap = target_frame - self.current_frame_index
+
+        if frame_gap < 0 or frame_gap > self.LARGE_GAP_FRAME_THRESHOLD:
+            # Backward (shouldn't normally happen given chronological
+            # processing, but handled defensively) or a large forward gap —
+            # a real seek is cheaper than decoding everything in between.
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            self.current_frame_index = target_frame - 1
+
+        frame = None
+        while self.current_frame_index < target_frame:
+            ok, frame = self.cap.read()
+            self.current_frame_index += 1
+            if not ok:
+                return None
+        return frame
+
+    def release(self):
+        self.cap.release()
+
+
+def video_sentiment_for_window(video_reader, start, end, fps_sample=2):
+    """
+    Samples a few frames across [start, end] using the given
+    SequentialVideoReader (opened once for the whole file — see its
+    docstring for why that matters), runs DeepFace's emotion analysis on
+    each, and averages the dominant face's scores across frames into the
+    6 Sentiments.
     """
     import cv2
     from deepface import DeepFace
@@ -300,8 +407,6 @@ def video_sentiment_for_window(video_path, start, end, fps_sample=2):
     # per-prediction progress bars print once per sampled frame otherwise.
     tf.keras.utils.disable_interactive_logging()
 
-    cap = cv2.VideoCapture(video_path)
-    native_fps = cap.get(cv2.CAP_PROP_FPS) or 25
     duration = max(end - start, 1.0 / fps_sample)
     n_frames = max(1, int(duration * fps_sample))
 
@@ -310,10 +415,10 @@ def video_sentiment_for_window(video_path, start, end, fps_sample=2):
 
     for i in range(n_frames):
         t = start + (i / fps_sample)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * native_fps))
-        ok, frame = cap.read()
-        if not ok:
+        frame = video_reader.get_frame_at_time(t)
+        if frame is None:
             continue
+        frame = _resize_for_analysis(frame, cv2)
 
         # enforce_detection=False: return gracefully (empty/low-confidence
         # result) instead of raising when a frame has no detectable face,
@@ -345,7 +450,6 @@ def video_sentiment_for_window(video_path, start, end, fps_sample=2):
                 accum[mapped] += float(score) / 100.0
         counted += 1
 
-    cap.release()
     if counted == 0:
         return {s: 0.0 for s in SENTIMENTS}
     return {s: v / counted for s, v in accum.items()}
@@ -412,6 +516,13 @@ def build_segments(whisper_segments, duration, media_kind, wav_path, video_path,
     # DeepFace needs no long-lived detector object like fer's FER(mtcnn=True)
     # did — it lazily loads and caches its models internally on first call.
 
+    # One shared reader/handle for the whole file each — see
+    # SequentialVideoReader's docstring and audio_sentiment_for_window()'s
+    # docstring for why each matters (video: a real, measurable win; audio:
+    # architectural consistency more than a measured one).
+    import soundfile as sf
+    video_reader = SequentialVideoReader(video_path) if media_kind == 'video' else None
+
     segments_out = []
     cursor = 0.0
     words_done = 0
@@ -439,41 +550,47 @@ def build_segments(whisper_segments, duration, media_kind, wav_path, video_path,
             t = gap_start
             while t < gap_end:
                 window_end = min(t + WORDLESS_SAMPLE_RATE, gap_end)
-                sentiment_samples.append(video_sentiment_for_window(video_path, t, window_end))
+                sentiment_samples.append(video_sentiment_for_window(video_reader, t, window_end))
                 t += WORDLESS_SAMPLE_RATE
         segments_out.append({'type': 'silence', 'start': gap_start, 'end': gap_end, 'sentimentSamples': sentiment_samples})
 
-    for seg in whisper_segments:
-        if seg.get('_unprocessable'):
-            flush_gap(cursor, seg['start'])
-            segments_out.append({'type': 'gap', 'start': seg['start'], 'end': seg['end']})
-            cursor = seg['end']
-            continue
+    try:
+        with sf.SoundFile(wav_path) as sound_file:
+            for seg in whisper_segments:
+                if seg.get('_unprocessable'):
+                    flush_gap(cursor, seg['start'])
+                    segments_out.append({'type': 'gap', 'start': seg['start'], 'end': seg['end']})
+                    cursor = seg['end']
+                    continue
 
-        flush_gap(cursor, seg['start'])
+                flush_gap(cursor, seg['start'])
 
-        words_out = []
-        for w in seg['words']:
-            a_sent = audio_sentiment_for_window(audio_clf, wav_path, w['start'], w['end'])
-            if media_kind == 'video':
-                v_sent = video_sentiment_for_window(video_path, w['start'], w['end'])
-                sentiment = average_sentiment_dicts(a_sent, v_sent)
-            else:
-                sentiment = a_sent
-            words_out.append({'word': w['word'], 'start': w['start'], 'end': w['end'], 'sentiment': sentiment})
+                words_out = []
+                for w in seg['words']:
+                    a_sent = audio_sentiment_for_window(audio_clf, sound_file, w['start'], w['end'])
+                    if media_kind == 'video':
+                        v_sent = video_sentiment_for_window(video_reader, w['start'], w['end'])
+                        sentiment = average_sentiment_dicts(a_sent, v_sent)
+                    else:
+                        sentiment = a_sent
+                    words_out.append({'word': w['word'], 'start': w['start'], 'end': w['end'], 'sentiment': sentiment})
 
-            words_done += 1
-            now = time.monotonic()
-            if now - last_progress_write >= PROGRESS_WRITE_INTERVAL_SEC:
-                fraction = words_done / total_words if total_words > 0 else 0.0
-                write_progress(progress_path, 'scoring', fraction, current=words_done, total=total_words)
-                last_progress_write = now
+                    words_done += 1
+                    now = time.monotonic()
+                    if now - last_progress_write >= PROGRESS_WRITE_INTERVAL_SEC:
+                        fraction = words_done / total_words if total_words > 0 else 0.0
+                        write_progress(progress_path, 'scoring', fraction, current=words_done, total=total_words)
+                        last_progress_write = now
 
-        segments_out.append({'type': 'words', 'words': words_out})
-        cursor = seg['end']
+                segments_out.append({'type': 'words', 'words': words_out})
+                cursor = seg['end']
 
-    flush_gap(cursor, duration)
-    write_progress(progress_path, 'scoring', 1.0, current=total_words, total=total_words)
+            flush_gap(cursor, duration)
+            write_progress(progress_path, 'scoring', 1.0, current=total_words, total=total_words)
+    finally:
+        if video_reader is not None:
+            video_reader.release()
+
     return segments_out
 
 

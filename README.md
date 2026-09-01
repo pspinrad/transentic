@@ -138,21 +138,30 @@ styling has been retired for exactly this reason, replaced with
 + `font-stretch` together) — both ordinary box-affecting properties with
 none of `transform`'s hit-testing risk.
 
-## Processing time (estimate, not yet benchmarked)
+## Processing time (now measured, not just estimated)
 
-For 30 seconds of well-lit, well-recorded speaking video on a modern
-CPU-only laptop:
+Real per-word timing gathered while chasing a since-fixed performance issue
+(see the git history / commit messages around the frame-downscaling and
+persistent-file-handle changes if you want the full story). For video with
+a visible face, at source resolutions at or under 720p on its longer side:
 
-| Stage | Rough estimate |
+| Stage | Measured cost per word |
 |---|---|
-| Transcription (faster-whisper, `small`) | 15–60 sec |
-| Audio sentiment (wav2vec2 SER, per word) | 5–20 sec |
-| Facial expression (FER, sampled ~2 fps) | 10–40 sec |
-| **Total** | **~1–3 min per 30 sec of source** |
+| Audio sentiment (wav2vec2 SER) | ~50–90ms |
+| Facial expression (DeepFace, 1-2 sampled frames) | ~370–430ms |
+| **Total per word** | **~400–500ms**, i.e. roughly 2 words/sec |
 
-That's roughly 2–6x real time — well under the one-hour-per-30-seconds
-threshold you were checking against. A discrete GPU would speed this up
-further, but isn't required for a proof-of-concept.
+**Video resolution matters a lot, and is handled automatically.** DeepFace's
+cost scales with pixel count — a source well above 720p (e.g. 4K) would
+cost several seconds per word without downscaling, which is exactly what
+was observed and fixed. `MAX_FRAME_DIMENSION` in `backend/analyze.py`
+downscales every frame to at most 720px on its longer side before facial
+analysis (never upscales a smaller source), so this is transparent
+regardless of source resolution — a 2880x2160 source measured at the same
+~400ms/word facial-analysis cost as a native 720p one after this fix.
+
+Audio-only files (no facial analysis stage at all) are correspondingly
+much faster — well under 100ms/word — since they skip DeepFace entirely.
 
 ## Known limitations / things to sanity-check on first real run
 
@@ -167,10 +176,12 @@ further, but isn't required for a proof-of-concept.
   dropped). Verify it downloads and performs as expected — SER model quality
   varies more than ASR quality does, and this is the piece most likely to
   need swapping out after you see real output.
-- **`fer`'s underlying TensorFlow model** is a few years old at this point;
-  it's still reasonable for a proof-of-concept but is the weakest link on
-  accuracy if the speaker's expressions are subtle.
+- **DeepFace's default emotion model** is a compact CNN over the 7 Ekman
+  expressions — reasonable for a proof-of-concept, but it's not a
+  specialized state-of-the-art expression-recognition model, so subtle
+  expressions are the likeliest place accuracy falls short.
 - **Multiple speakers / off-camera speakers** aren't handled — the pipeline
   assumes one on-camera speaker and takes the largest detected face per
   frame. Multi-speaker diarization would be a natural next step, not
   currently in scope per the spec as written.
+  
