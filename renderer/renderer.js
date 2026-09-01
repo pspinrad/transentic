@@ -222,9 +222,11 @@
     transcriptBody.innerHTML = '';
     state.wordEls = [];
 
+    const sentenceBreaks = computeSentenceBreakWords(segments);
+
     segments.forEach((seg) => {
       if (seg.type === 'words') {
-        seg.words.forEach((w) => appendWord(w));
+        seg.words.forEach((w) => appendWord(w, sentenceBreaks));
       } else if (seg.type === 'silence') {
         appendSilenceDashes(seg);
       } else if (seg.type === 'gap') {
@@ -233,7 +235,37 @@
     });
   }
 
-  function appendWord(w) {
+  // Sentence-end detection is a punctuation heuristic, not true NLP sentence
+  // tokenization — it can occasionally misfire on abbreviations or decimals
+  // (e.g. "3.5", "Mr.") that happen to be followed by a capitalized word.
+  // Good enough for a readability line break; not guaranteed perfect.
+  // Returns a Set of word objects (by reference) that should get a line
+  // break after them — computed over a flattened, cross-segment word list
+  // so a sentence continuing into the next whisper segment is still
+  // detected correctly, not just sentence ends that happen to land on a
+  // segment boundary.
+  function computeSentenceBreakWords(segments) {
+    const flatWords = [];
+    segments.forEach((seg) => {
+      if (seg.type === 'words') {
+        seg.words.forEach((w) => flatWords.push(w));
+      }
+    });
+
+    const SENTENCE_END_RE = /[.!?]+["'”’)\]]*$/;
+    const breakAfter = new Set();
+    for (let i = 0; i < flatWords.length; i++) {
+      const w = flatWords[i];
+      if (!SENTENCE_END_RE.test(w.word)) continue;
+      const next = flatWords[i + 1];
+      if (!next || /^[A-Z]/.test(next.word)) {
+        breakAfter.add(w);
+      }
+    }
+    return breakAfter;
+  }
+
+  function appendWord(w, sentenceBreaks) {
     const span = document.createElement('span');
     span.className = 't-word';
     span.textContent = w.word + ' ';
@@ -247,6 +279,10 @@
     span.addEventListener('click', () => seekTo(w.start));
     transcriptBody.appendChild(span);
     state.wordEls.push({ el: span, start: w.start, end: w.end });
+
+    if (sentenceBreaks && sentenceBreaks.has(w)) {
+      transcriptBody.appendChild(document.createElement('br'));
+    }
   }
 
   function appendSilenceDashes(seg) {
