@@ -145,6 +145,36 @@ def extract_audio_wav(src_path, out_path, sample_rate=16000):
     )
 
 
+def normalize_timestamps(input_path, output_path):
+    """
+    Re-muxes the file (no re-encoding — a fast, lossless container-level
+    copy) with -avoid_negative_ts make_zero.
+
+    This corrects a real, verified issue: some source files have a
+    mismatched/negative start timestamp between their audio and video
+    streams. That's what caused Chromium-based players (including this
+    app's own <video> element) to visibly drift audio out of sync with
+    video by a consistent, noticeable offset — confirmed by the same fix
+    resolving playback drift for affected test files.
+
+    The same underlying mismatch would also silently misalign THIS
+    pipeline's own audio-vs-video sentiment sampling: word timestamps come
+    from Whisper transcribing a separately-extracted audio track, while
+    facial-expression frames are read directly from the original video
+    file. If those two streams' internal clocks don't actually agree with
+    each other, a word's "simultaneous" audio and video sentiment could be
+    sampled from moments that don't really correspond to the same instant.
+    Normalizing once, up front, and using only the normalized copy for
+    everything downstream (audio extraction AND video frame reading)
+    removes that risk regardless of whether a given source file happens to
+    have this irregularity — a harmless no-op remux for files that don't.
+    """
+    subprocess.run(
+        ['ffmpeg', '-y', '-i', input_path, '-c', 'copy', '-avoid_negative_ts', 'make_zero', output_path],
+        capture_output=True, check=True
+    )
+
+
 def compute_waveform_samples(wav_path, n_samples=200):
     """Coarse per-bucket peak amplitude, normalized 0..1, for the progress-bar ticks."""
     import wave
@@ -630,12 +660,26 @@ def analyze_media(path, progress_path=None):
     # up until per-word scoring begins.
     write_progress(progress_path, 'extracting_audio', 0.0, detail='Reading file info…')
     probe = ffprobe_json(path)
-    metadata, duration = extract_metadata(probe)
+    metadata, _ = extract_metadata(probe)  # title/date only here; duration comes from the normalized copy below
 
     with tempfile.TemporaryDirectory() as tmp:
+        # See normalize_timestamps()'s docstring — this isn't just about
+        # playback smoothness. Everything downstream (duration, audio
+        # extraction, video frame reading) uses this normalized copy
+        # rather than the original path, so audio-derived word timestamps
+        # and direct video-frame reads are guaranteed to agree on what
+        # "the same instant" means, regardless of whether the original
+        # file happened to have mismatched stream start timestamps.
+        normalized_path = os.path.join(tmp, 'normalized' + os.path.splitext(path)[1])
+        write_progress(progress_path, 'extracting_audio', 0.1, detail='Normalizing timestamps…')
+        normalize_timestamps(path, normalized_path)
+
+        normalized_probe = ffprobe_json(normalized_path)
+        _, duration = extract_metadata(normalized_probe)
+
         wav_path = os.path.join(tmp, 'audio.wav')
-        write_progress(progress_path, 'extracting_audio', 0.3, detail='Extracting audio…')
-        extract_audio_wav(path, wav_path)
+        write_progress(progress_path, 'extracting_audio', 0.4, detail='Extracting audio…')
+        extract_audio_wav(normalized_path, wav_path)
         write_progress(progress_path, 'extracting_audio', 1.0, detail='Extracting audio…')
 
         waveform = compute_waveform_samples(wav_path) if media_kind == 'audio' else []
@@ -664,7 +708,7 @@ def analyze_media(path, progress_path=None):
         # without needing a more complex weighted unit, and it matches the
         # "word N of M" phrasing surfaced in the UI.
         segments = build_segments(
-            whisper_segments, duration, media_kind, wav_path, path,
+            whisper_segments, duration, media_kind, wav_path, normalized_path,
             progress_path=progress_path, total_words=processable_word_count
         )
 
