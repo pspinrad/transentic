@@ -565,8 +565,13 @@
       mediaKind: state.mediaKind,
       metadata: state.analysis.metadata || {},
       durationSec: state.analysis.durationSec,
-      segments: state.analysis.segments,
-      config: state.config
+      segments: state.analysis.segments
+      // Sentiment Styling config deliberately NOT saved here — it's a
+      // session-level preference (see loadFromSidecar()'s matching
+      // comment), not something tied to any particular file. An earlier
+      // version saved/restored it per-file, which meant opening an old
+      // senticscript would silently overwrite your current styling setup
+      // with whatever was active back when that file was saved.
     };
 
     const fileContent = buildSenticscriptFile(state.analysis.segments || [], sidecar);
@@ -614,7 +619,11 @@
     state.savedPath = filePath;
     state.filePath = sidecar.sourceFilePath;
     state.mediaKind = sidecar.mediaKind;
-    state.config = sidecar.config || state.config;
+    // state.config is deliberately left untouched here — Sentiment Styling
+    // is a session-level preference, not something a file should carry or
+    // override. Opening an old senticscript (possibly saved before a
+    // styling was renamed/retired, or from manual experimentation) should
+    // never silently change your current styling setup underneath you.
     state.analysis = {
       metadata: sidecar.metadata,
       durationSec: sidecar.durationSec,
