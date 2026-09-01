@@ -21,12 +21,34 @@ const StylingEngine = (function (rawSettings) {
   };
   const { SENTIMENTS, STYLINGS } = settings;
 
+  // Sentiment pairs treated as semantic opposites. If both are present at
+  // once on the same word, rendering both stylings simultaneously reads as
+  // contradictory (a word visually styled as both "happy" and "sad" at
+  // once) — so only their net difference survives: the smaller of the pair
+  // is subtracted from both, leaving one at its net value and the other at
+  // exactly 0. E.g. raw Happy=0.5, Sad=0.3 -> Happy=0.2, Sad=0.
+  // Extend this list if other pairs turn out to need the same treatment.
+  const OPPOSITE_SENTIMENT_PAIRS = [['Happy', 'Sad']];
+
+  function resolveOppositeSentiments(sentimentScores) {
+    const resolved = Object.assign({}, sentimentScores);
+    OPPOSITE_SENTIMENT_PAIRS.forEach(([a, b]) => {
+      const va = resolved[a] || 0;
+      const vb = resolved[b] || 0;
+      const net = va - vb;
+      resolved[a] = Math.max(0, net);
+      resolved[b] = Math.max(0, -net);
+    });
+    return resolved;
+  }
+
   /**
    * @param {Object} sentimentScores - e.g. { Happy: 0.2, Sad: 0.0, ... } each 0-1 raw model output
    * @param {Object} userConfig - { stylingMap: {Sentiment: Styling}, sensitivity: {Sentiment: 0-1} }
    * @returns {Object} { cssStyle: {...}, lineHeightEm: number }
    */
-  function computeWordStyle(sentimentScores, userConfig) {
+  function computeWordStyle(rawSentimentScores, userConfig) {
+    const sentimentScores = resolveOppositeSentiments(rawSentimentScores);
     const { stylingMap, sensitivity } = userConfig;
 
     // 1. Compute the "effective" (gain-adjusted) 0-1 value for each STYLING,
