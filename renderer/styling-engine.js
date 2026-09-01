@@ -15,7 +15,9 @@ const StylingEngine = (function (rawSettings) {
     min_font_size: 12, max_font_size: 24,
     min_font_weight: 400, max_font_weight: 900,
     min_underline_gray: 250, max_underline_gray: 0,
-    max_forward_slant: 20, max_backwards_slant: 20,
+    max_forward_slant: 10,
+    min_letter_spacing_space_em: 0, max_letter_spacing_space_em: 0.15, max_wdth_space_delta: 51,
+    min_letter_spacing_crowd_em: 0, max_letter_spacing_crowd_em: -0.03, max_wdth_crowd_delta: -75,
     max_baseline_bounce_em: 1,
     default_sensitivity: 0.5, sensitivity_gain_multiplier: 2
   };
@@ -105,11 +107,37 @@ const StylingEngine = (function (rawSettings) {
 
     const underlineGray = Math.round(lerp(settings.min_underline_gray, settings.max_underline_gray, effectiveByStyling['Underline']));
 
+    // Forward-slant now uses the font's own native `slnt` variation axis
+    // (via the standard font-style: oblique <angle> property) instead of a
+    // CSS transform. A transform paints outside the element's actual box —
+    // that's what caused slanted words to visually spill into neighbors
+    // and confuse click/selection hit-testing. font-style: oblique reshapes
+    // the glyphs themselves within their normal metrics, so it reflows
+    // and hit-tests correctly with zero special-case handling needed.
+    // Per the CSS spec, a POSITIVE oblique angle here maps to the font's
+    // conventional right-leaning (negative) slnt value internally.
     const forwardDeg = lerp(0, settings.max_forward_slant, effectiveByStyling['Forward-slant']);
-    const backwardDeg = lerp(0, settings.max_backwards_slant, effectiveByStyling['Backward-slant']);
-    // Forward slant leans one way, backward the other; if both are active on
-    // the same word (different sentiments driving each), they sum.
-    const netSkewDeg = (-forwardDeg) + backwardDeg;
+
+    // Space-letters / Crowd-letters: an earlier "Backward-slant" styling
+    // used the same risky transform approach as Forward-slant and was
+    // retired for reading room. These two replace it — Space-letters
+    // widens tracking and stretches the font wider; Crowd-letters tightens
+    // tracking and condenses it narrower. Both are ordinary box-affecting
+    // properties (letter-spacing, font-stretch), so they reflow normally
+    // like Size does, with no transform/hit-testing risk at all.
+    // If both are active at once (different sentiments mapped to each),
+    // their deltas simply sum — since one pushes positive and the other
+    // negative, this naturally nets out rather than needing an explicit
+    // opposite-pair cancellation rule.
+    const spaceEffective = effectiveByStyling['Space-letters'];
+    const crowdEffective = effectiveByStyling['Crowd-letters'];
+    const letterSpacingEm =
+      lerp(settings.min_letter_spacing_space_em, settings.max_letter_spacing_space_em, spaceEffective) +
+      lerp(settings.min_letter_spacing_crowd_em, settings.max_letter_spacing_crowd_em, crowdEffective);
+    const wdthDelta =
+      lerp(0, settings.max_wdth_space_delta, spaceEffective) +
+      lerp(0, settings.max_wdth_crowd_delta, crowdEffective);
+    const wdthPercent = Math.max(25, Math.min(151, 100 + wdthDelta)); // clamp to Roboto Flex's actual wdth range
 
     const bounceEm = settings.max_baseline_bounce_em * effectiveByStyling['Baseline-bounce'];
 
@@ -118,22 +146,13 @@ const StylingEngine = (function (rawSettings) {
       backgroundColor: `rgb(${rBkgnd}, ${gBkgnd}, ${bBkgnd})`,
       fontSize: `${fontSizePt}pt`,
       fontWeight: String(fontWeight),
+      fontStyle: forwardDeg > 0 ? `oblique ${formatSmallNumber(forwardDeg)}deg` : 'normal',
+      fontStretch: `${formatSmallNumber(wdthPercent)}%`,
+      letterSpacing: `${formatSmallNumber(letterSpacingEm)}em`,
       textDecorationLine: 'underline',
       textDecorationColor: `rgb(${underlineGray}, ${underlineGray}, ${underlineGray})`,
       textDecorationThickness: '2px',
-      transform: `skewX(${formatSmallNumber(netSkewDeg)}deg) translateY(${formatSmallNumber(-bounceEm)}em)`,
-      // Skew doesn't reflow layout — pad horizontally so slanted glyphs don't
-      // visually collide with neighboring words. Padding is part of the same
-      // transformed box, so it genuinely gives the skewed content more room
-      // before its rendered pixels (and therefore click/selection hit area)
-      // spill into a neighbor's space — hence the generous multiplier.
-      // Rounded and snapped to exactly 0 below a tiny threshold: without
-      // this, near-zero (but not exactly zero) floating-point results from
-      // averaging sentiment scores show up as ugly scientific notation
-      // (e.g. "7.46826e-08em") in the actual inline style/DevTools, even
-      // though the visual effect is imperceptible either way.
-      paddingLeft: `${formatSmallNumber(Math.abs(netSkewDeg) * 0.35)}em`,
-      paddingRight: `${formatSmallNumber(Math.abs(netSkewDeg) * 0.35)}em`,
+      transform: `translateY(${formatSmallNumber(-bounceEm)}em)`,
       display: 'inline-block'
     };
 

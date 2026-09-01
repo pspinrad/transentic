@@ -1,6 +1,20 @@
 @font-face {
-  font-family: 'Inter var';
-  src: local('Inter');
+  font-family: 'Roboto Flex';
+  /* Bundled locally rather than relying on the system or a CDN: this is a
+     desktop app that should work fully offline, and "Roboto Flex" (the
+     full variable version, not plain system "Roboto") isn't something any
+     OS ships pre-installed. See README for how to obtain this file — it
+     can't be embedded as binary data by an AI coding assistant, only
+     referenced by path. Use Fontsource's "standard" variant specifically
+     (roboto-flex-latin-standard-normal.woff2) — it's the one bundling
+     wght+wdth+slnt+opsz together; the plain "wght" variant only has the
+     weight axis and would make font-stretch/oblique silently do nothing. */
+  src: url('assets/fonts/RobotoFlex-Variable.woff2') format('woff2-variations'),
+       url('assets/fonts/RobotoFlex-Variable.woff2') format('woff2');
+  font-weight: 100 1000;
+  font-stretch: 25% 151%;
+  font-style: oblique 0deg 10deg;
+  font-display: swap;
 }
 
 :root {
@@ -13,7 +27,7 @@
   --accent-dim: #e8cba8;
   --danger: #c0522f;
   --mono: 'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, monospace;
-  --sans: 'Inter var', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --sans: 'Roboto Flex', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 * { box-sizing: border-box; }

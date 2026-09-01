@@ -4,7 +4,7 @@
     "R-text", "G-text", "B-text",
     "R-bkgnd", "G-bkgnd", "B-bkgnd",
     "Size", "Weight", "Underline",
-    "Forward-slant", "Backward-slant", "Baseline-bounce"
+    "Forward-slant", "Space-letters", "Crowd-letters", "Baseline-bounce"
   ],
 
   "min_font_size": 14,
@@ -16,8 +16,15 @@
   "min_underline_gray": 250,
   "max_underline_gray": 0,
 
-  "max_forward_slant": 14,
-  "max_backwards_slant": 14,
+  "max_forward_slant": 10,
+
+  "min_letter_spacing_space_em": 0,
+  "max_letter_spacing_space_em": 0.15,
+  "max_wdth_space_delta": 51,
+
+  "min_letter_spacing_crowd_em": 0,
+  "max_letter_spacing_crowd_em": -0.03,
+  "max_wdth_crowd_delta": -75,
 
   "max_baseline_bounce_em": 0.5,
 
@@ -39,7 +46,7 @@
     "Sad": "Weight",
     "Surprised": "Baseline-bounce",
     "Angry": "R-text",
-    "Fearful": "Backward-slant",
+    "Fearful": "Crowd-letters",
     "Disgusted": "G-bkgnd"
   },
 
