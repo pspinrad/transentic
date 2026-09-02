@@ -115,6 +115,14 @@
         <tbody id="settings-table-body"></tbody>
       </table>
 
+      <div class="settings-experimental">
+        <label for="sentiment-mode-select">Sentiment values (experimental)</label>
+        <select id="sentiment-mode-select">
+          <option value="raw">Raw</option>
+          <option value="normalized">Normalized — dampens sentiments that are elevated throughout the whole file</option>
+        </select>
+      </div>
+
       <div class="settings-actions">
         <button id="btn-restore-defaults" class="btn btn-ghost">Restore Defaults</button>
         <div class="spacer"></div>

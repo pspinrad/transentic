@@ -438,6 +438,29 @@ html, body {
   text-align: right;
 }
 
+.settings-experimental {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-experimental label {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.settings-experimental select {
+  flex: 1;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
 .settings-actions {
   display: flex;
   align-items: center;
