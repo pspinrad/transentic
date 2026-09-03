@@ -315,6 +315,46 @@ html, body {
 }
 .icon-btn:hover { color: var(--text-primary); background: var(--bg-panel); }
 
+.header-right-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transcript-search {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 4px 3px 10px;
+}
+
+.transcript-search input {
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  width: 160px;
+  outline: none;
+}
+.transcript-search input::placeholder { color: var(--text-muted); }
+
+.search-count {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding: 0 4px;
+  min-width: 44px;
+  text-align: right;
+}
+
+.icon-btn-small {
+  padding: 4px;
+}
+
 .transcript-body {
   flex: 1;
   overflow-y: auto;
@@ -331,6 +371,18 @@ html, body {
 }
 .t-word.current {
   box-shadow: 0 0 0 2px var(--accent);
+}
+.t-word.search-match {
+  box-shadow: 0 0 0 2px #d4b106;
+}
+.t-word.search-match-current {
+  box-shadow: 0 0 0 3px #b8860b;
+}
+.t-word.current.search-match-current {
+  /* Both indicators active on the same word (currently playing AND the
+     active search match) — a double ring keeps each one legible rather
+     than one silently overriding the other. */
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 5px #b8860b;
 }
 
 .t-gap-marker {

@@ -43,7 +43,14 @@
     normalizationStats: null,
 
     wordEls: [],                 // flat list of {el, start, end} for playhead sync + seeking
-    isSeeking: false
+    isSeeking: false,
+
+    // Transcript search
+    search: {
+      query: '',
+      matches: [],        // array of word span elements currently matching
+      currentIndex: -1    // index into matches; -1 means no active selection
+    }
   };
 
   // ---------------------------------------------------------------------
@@ -81,6 +88,13 @@
   const transcriptBody = el('transcript-body');
   const btnSettings = el('btn-settings');
 
+  const transcriptSearchBar = el('transcript-search-bar');
+  const transcriptSearchInput = el('transcript-search-input');
+  const searchCountEl = el('search-count');
+  const btnSearchPrev = el('btn-search-prev');
+  const btnSearchNext = el('btn-search-next');
+  const btnSearchClose = el('btn-search-close');
+
   const settingsOverlay = el('settings-overlay');
   const settingsTableBody = el('settings-table-body');
   const sentimentModeSelect = el('sentiment-mode-select');
@@ -97,6 +111,7 @@
     // basic UI interactivity like the settings gear from working.
     wireSourceControls();
     wireSettingsModal();
+    wireSearchBar();
     btnCancelAnalysis.addEventListener('click', handleCancelAnalysis);
 
     if (!window.electronAPI) {
@@ -131,6 +146,7 @@
     state.filePath = filePath;
     state.guid = null;
     state.savedPath = null;
+    closeSearchBar(); // genuinely new content — an old search's matches/query wouldn't make sense here
 
     const ext = filePath.split('.').pop().toLowerCase();
     const videoExts = ['mp4', 'mov', 'mkv', 'webm'];
@@ -322,6 +338,177 @@
         appendSilenceDashes(seg);
       } else if (seg.type === 'gap') {
         appendInlineError(seg);
+      }
+    });
+
+    // Re-render (e.g. after a Settings save) rebuilds every word span from
+    // scratch, so any active search's element references are now stale/
+    // detached — re-running it against the fresh DOM keeps it working
+    // rather than silently going dead. Genuinely new content (a different
+    // file opened) explicitly closes the search bar first instead — see
+    // openMedia()/loadFromSidecar().
+    if (state.search.query) {
+      performSearch(state.search.query);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Transcript search (Cmd/Ctrl+F)
+  // ---------------------------------------------------------------------
+  // Each match is now an ARRAY of word elements (usually one, but a
+  // multi-word phrase query spans several) — matching against a single
+  // word's text in isolation (the original implementation) could never
+  // find a phrase crossing a word boundary at all.
+  function buildSearchIndex() {
+    // Joins every word's text with single spaces into one big lowercase
+    // string, tracking the [start,end) character range each word occupies
+    // within it — lets a plain substring search naturally span multiple
+    // words, then map a found match back to exactly which word(s) it hit.
+    let text = '';
+    const wordRanges = [];
+    state.wordEls.forEach(({ el: wEl }) => {
+      if (wEl.classList.contains('t-gap-marker')) {
+        // A character no query can ever contain, so a phrase can't bridge
+        // across a silence marker and match as if it were spoken
+        // continuously — insert it as its own "word" with a normal space
+        // on each side so it can't accidentally fuse adjacent real words
+        // together either.
+        text += (text ? ' ' : '') + '\u0000';
+        return;
+      }
+      const wordText = wEl.textContent.trim().toLowerCase();
+      if (text) text += ' ';
+      const start = text.length;
+      text += wordText;
+      wordRanges.push({ el: wEl, start, end: text.length });
+    });
+    return { text, wordRanges };
+  }
+
+  function performSearch(query) {
+    clearSearchHighlights();
+    state.search.query = query;
+    state.search.matches = [];
+    state.search.currentIndex = -1;
+
+    const trimmed = query.trim().toLowerCase();
+    if (!trimmed) {
+      updateSearchCount();
+      return;
+    }
+
+    const { text, wordRanges } = buildSearchIndex();
+    const matches = [];
+    let searchFrom = 0;
+    while (true) {
+      const idx = text.indexOf(trimmed, searchFrom);
+      if (idx === -1) break;
+      const matchEnd = idx + trimmed.length;
+      const matchedEls = wordRanges
+        .filter((wr) => wr.start < matchEnd && wr.end > idx)
+        .map((wr) => wr.el);
+      if (matchedEls.length > 0) {
+        matches.push(matchedEls);
+        matchedEls.forEach((wEl) => wEl.classList.add('search-match'));
+      }
+      searchFrom = idx + 1; // +1 (not matchEnd) so overlapping occurrences are still all found
+    }
+
+    state.search.matches = matches;
+    if (matches.length > 0) {
+      state.search.currentIndex = 0;
+      highlightCurrentMatch();
+    }
+    updateSearchCount();
+  }
+
+  function clearSearchHighlights() {
+    state.search.matches.forEach((matchEls) => {
+      matchEls.forEach((wEl) => wEl.classList.remove('search-match', 'search-match-current'));
+    });
+  }
+
+  function highlightCurrentMatch() {
+    state.search.matches.forEach((matchEls) => {
+      matchEls.forEach((wEl) => wEl.classList.remove('search-match-current'));
+    });
+    const current = state.search.matches[state.search.currentIndex];
+    if (current) {
+      current.forEach((wEl) => wEl.classList.add('search-match-current'));
+      current[0].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }
+
+  function updateSearchCount() {
+    if (state.search.matches.length === 0) {
+      searchCountEl.textContent = state.search.query.trim() ? '0 of 0' : '';
+    } else {
+      searchCountEl.textContent = `${state.search.currentIndex + 1} of ${state.search.matches.length}`;
+    }
+  }
+
+  function goToNextMatch() {
+    if (state.search.matches.length === 0) return;
+    state.search.currentIndex = (state.search.currentIndex + 1) % state.search.matches.length;
+    highlightCurrentMatch();
+    updateSearchCount();
+  }
+
+  function goToPrevMatch() {
+    if (state.search.matches.length === 0) return;
+    state.search.currentIndex = (state.search.currentIndex - 1 + state.search.matches.length) % state.search.matches.length;
+    highlightCurrentMatch();
+    updateSearchCount();
+  }
+
+  function openSearchBar() {
+    transcriptSearchBar.classList.remove('hidden');
+    transcriptSearchInput.focus();
+    transcriptSearchInput.select();
+  }
+
+  function closeSearchBar() {
+    transcriptSearchBar.classList.add('hidden');
+    clearSearchHighlights();
+    transcriptSearchInput.value = '';
+    state.search.query = '';
+    state.search.matches = [];
+    state.search.currentIndex = -1;
+    updateSearchCount();
+  }
+
+  function wireSearchBar() {
+    let debounceTimer = null;
+    transcriptSearchInput.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      // Light debounce: a full linear scan over every word on each
+      // keystroke is cheap for typical transcripts, but this keeps typing
+      // responsive even on very long (multi-thousand-word) ones.
+      debounceTimer = setTimeout(() => performSearch(transcriptSearchInput.value), 120);
+    });
+    transcriptSearchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (e.shiftKey) goToPrevMatch(); else goToNextMatch();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeSearchBar();
+      }
+    });
+    btnSearchNext.addEventListener('click', goToNextMatch);
+    btnSearchPrev.addEventListener('click', goToPrevMatch);
+    btnSearchClose.addEventListener('click', closeSearchBar);
+
+    // Global shortcut — Electron has no built-in find bar (that's a Chrome
+    // browser UI feature, not something a bare BrowserWindow provides), so
+    // Cmd/Ctrl+F does nothing at all unless we bind it ourselves. Bound
+    // globally rather than only while the transcript pane has focus, so it
+    // works no matter where the user's attention currently is.
+    document.addEventListener('keydown', (e) => {
+      const isFindShortcut = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f';
+      if (isFindShortcut) {
+        e.preventDefault();
+        openSearchBar();
       }
     });
   }
@@ -713,6 +900,7 @@
   }
 
   function loadFromSidecar(filePath, sidecar) {
+    closeSearchBar(); // genuinely new content — an old search's matches/query wouldn't make sense here
     state.guid = sidecar.guid;
     state.savedPath = filePath;
     state.filePath = sidecar.sourceFilePath;
