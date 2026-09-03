@@ -24,6 +24,13 @@ cloud, per product decision):
                          Actively maintained, unlike the `fer` package this
                          app originally used.
 
+Sentiment granularity: analyzed per CLAUSE CHUNK, not per word — see
+split_into_chunks() and build_segments()'s docstring. Every word within a
+chunk shares that chunk's single sentiment result in the output below.
+This replaced an earlier per-word design that produced noisy, flickering
+values not well matched to how sentiment is actually expressed in speech
+(at clause/sentence granularity, not word-by-word).
+
 JSON_SCHEMA_NOTE — top-level output shape:
 {
   "status": "ok" | "unprocessable",
@@ -85,6 +92,7 @@ with open(CONFIG_PATH) as f:
 SENTIMENTS = CFG['SENTIMENTS']
 SKIP_INTERVAL = CFG['skip_interval_sec']
 WORDLESS_SAMPLE_RATE = CFG['wordless_sample_rate_sec']
+MAX_CHUNK_SEC = CFG['max_chunk_sec']
 ERROR_FULLY_UNPROCESSABLE = CFG['error_fully_unprocessable']
 
 VIDEO_EXTS = {'.mp4', '.mov', '.mkv', '.webm'}
@@ -294,21 +302,24 @@ def _download_raw_state_dict(model_id):
 
 def audio_sentiment_for_window(clf, sound_file, start, end):
     """
-    Runs the audio-emotion classifier over a short window of raw audio
-    centered on [start, end], widened slightly for stability on very short
-    words, and returns a dict of the 6 Sentiments -> 0..1 scores.
+    Runs the audio-emotion classifier over the given [start, end] window
+    (padded slightly at each edge), and returns a dict of the 6 Sentiments
+    -> 0..1 scores. Called once per clause chunk (see build_segments() /
+    split_into_chunks()), not once per word — this gives the model
+    multi-second clips with real signal to work with, rather than the
+    sub-second single-word clips an earlier per-word version used.
 
     Takes an already-open soundfile.SoundFile (opened once for the whole
     file — see build_segments()) rather than a path, avoiding the overhead
     of opening a fresh file handle and re-parsing the WAV header on every
-    single word. Unlike video seeking, this isn't position-dependent (WAV's
+    single call. Unlike video seeking, this isn't position-dependent (WAV's
     uncompressed PCM data supports true O(1) random-access seeking
     regardless of file size) — measured as already negligible (~0.2ms) even
     before this change, so this is mainly for architectural consistency
     with the video side rather than a measurable performance win on its own.
     """
     sample_rate = sound_file.samplerate
-    pad = 0.5  # widen very short word clips so the classifier has enough signal
+    pad = 0.5  # widen slightly so the classifier has a touch of context at the edges
     win_start = max(0.0, start - pad)
     win_end = end + pad
     start_frame = int(win_start * sample_rate)
@@ -534,13 +545,58 @@ def write_progress(progress_path, phase, fraction=0.0, detail=None, current=None
         pass
 
 
+def split_into_chunks(words, max_chunk_sec):
+    """
+    Groups a whisper segment's words into "clause" chunks — each chunk gets
+    exactly one sentiment analysis pass (audio + video), and every word in
+    it shares that same result, rather than each word being analyzed
+    independently.
+
+    Whisper's own segment boundaries (acoustic pauses) are used as the base
+    clause unit — a solid, already-available proxy for clause boundaries,
+    since that's naturally how people punctuate speech with breath/pause
+    breaks. This function only ever *splits* a segment further, when it
+    runs longer than max_chunk_sec; it never combines multiple whisper
+    segments together (a run of short segments stays as several small
+    clauses, not merged into one).
+
+    Splits only ever happen at word boundaries, never mid-word. Returns a
+    list of chunks, each a list of word dicts (never empty).
+    """
+    if not words:
+        return []
+    chunks = []
+    current_chunk = [words[0]]
+    chunk_start = words[0]['start']
+    for w in words[1:]:
+        if w['end'] - chunk_start > max_chunk_sec:
+            chunks.append(current_chunk)
+            current_chunk = [w]
+            chunk_start = w['start']
+        else:
+            current_chunk.append(w)
+    chunks.append(current_chunk)
+    return chunks
+
+
 def build_segments(whisper_segments, duration, media_kind, wav_path, video_path,
                     progress_path=None, total_words=0):
     """
     Walks Whisper's segments in time order, filling any timing gap wider than
     a heartbeat with either a 'gap' (unprocessable) or 'silence' (processable
-    non-speech, e.g. applause — rendered as styled dashes) block, then attaches
-    per-word sentiment.
+    non-speech, e.g. applause — rendered as styled dashes) block, then
+    attaches sentiment.
+
+    Sentiment is computed per CLAUSE CHUNK (see split_into_chunks()), not
+    per word — every word within a chunk shares that chunk's single
+    analysis result. This is a deliberate choice, not a shortcut: sentiment
+    expressed through tone and expression operates at clause/sentence
+    granularity in practice, not word-by-word, and analyzing each word in
+    isolation was producing noisy, flickering per-word values that didn't
+    track well with what a person watching the source actually perceives.
+    Clause-level analysis also gives the audio model much more signal per
+    call (multi-second clips instead of sub-second ones) and lets video
+    sampling average across many more frames per chunk.
     """
     audio_clf = load_audio_emotion_pipeline()
     # DeepFace needs no long-lived detector object like fer's FER(mtcnn=True)
@@ -575,6 +631,11 @@ def build_segments(whisper_segments, duration, media_kind, wav_path, video_path,
         # reads perfectly well whether or not someone is talking — so for
         # video files, sample DeepFace across the gap instead of leaving it
         # neutral. Audio-only files still get neutral dashes.
+        #
+        # This dash sampling is intentionally NOT tied to max_chunk_sec —
+        # it's a separate, fixed-interval marker cadence (wordless_sample_rate_sec)
+        # for a different purpose (spacing out visual dash markers), not an
+        # analysis-chunking decision.
         sentiment_samples = []
         if media_kind == 'video':
             t = gap_start
@@ -596,16 +657,25 @@ def build_segments(whisper_segments, duration, media_kind, wav_path, video_path,
                 flush_gap(cursor, seg['start'])
 
                 words_out = []
-                for w in seg['words']:
-                    a_sent = audio_sentiment_for_window(audio_clf, sound_file, w['start'], w['end'])
+                for chunk_words in split_into_chunks(seg['words'], MAX_CHUNK_SEC):
+                    chunk_start = chunk_words[0]['start']
+                    chunk_end = chunk_words[-1]['end']
+
+                    a_sent = audio_sentiment_for_window(audio_clf, sound_file, chunk_start, chunk_end)
                     if media_kind == 'video':
-                        v_sent = video_sentiment_for_window(video_reader, w['start'], w['end'])
+                        v_sent = video_sentiment_for_window(video_reader, chunk_start, chunk_end)
                         sentiment = average_sentiment_dicts(a_sent, v_sent)
                     else:
                         sentiment = a_sent
-                    words_out.append({'word': w['word'], 'start': w['start'], 'end': w['end'], 'sentiment': sentiment})
 
-                    words_done += 1
+                    # Every word in this chunk shares the same sentiment
+                    # dict reference — safe since it's never mutated after
+                    # this point, and JSON serialization doesn't care about
+                    # object identity, only value.
+                    for w in chunk_words:
+                        words_out.append({'word': w['word'], 'start': w['start'], 'end': w['end'], 'sentiment': sentiment})
+
+                    words_done += len(chunk_words)
                     now = time.monotonic()
                     if now - last_progress_write >= PROGRESS_WRITE_INTERVAL_SEC:
                         fraction = words_done / total_words if total_words > 0 else 0.0

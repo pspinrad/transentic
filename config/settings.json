@@ -36,6 +36,7 @@
 
   "wordless_sample_rate_sec": 3,
   "skip_interval_sec": 10,
+  "max_chunk_sec": 6,
 
   "default_sensitivity": 0.5,
   "sensitivity_gain_multiplier": 2,
