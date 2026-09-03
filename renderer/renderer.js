@@ -28,18 +28,14 @@
     // loadFromSidecar(), which deliberately never touch this).
     config: {
       stylingMap: Object.assign({}, SAFE_S.default_styling_map),
-      sensitivity: Object.fromEntries(SAFE_S.SENTIMENTS.map((s) => [s, SAFE_S.default_sensitivity])),
-      // EXPERIMENTAL — see normalizeSentimentVector()'s comment block.
-      // 'raw' | 'normalized'. Being part of this same session-level config
-      // object, it now naturally persists across opening files exactly
-      // like stylingMap/sensitivity do, with no special-casing needed.
-      sentimentMode: 'raw'
+      sensitivity: Object.fromEntries(SAFE_S.SENTIMENTS.map((s) => [s, SAFE_S.default_sensitivity]))
     },
     // Working copy edited live in the Settings modal, committed on Save
     pendingConfig: null,
 
     // Per-sentiment {baseline, spread} computed once whenever a new
-    // analysis loads, used by normalizeSentimentVector(). null until then.
+    // analysis loads, used by normalizeSentimentVector() — see its comment
+    // block for what this does and why it's applied unconditionally.
     normalizationStats: null,
 
     wordEls: [],                 // flat list of {el, start, end} for playhead sync + seeking
@@ -97,7 +93,6 @@
 
   const settingsOverlay = el('settings-overlay');
   const settingsTableBody = el('settings-table-body');
-  const sentimentModeSelect = el('sentiment-mode-select');
   const btnRestoreDefaults = el('btn-restore-defaults');
   const btnSettingsCancel = el('btn-settings-cancel');
   const btnSettingsSave = el('btn-settings-save');
@@ -208,7 +203,7 @@
   }
 
   // ---------------------------------------------------------------------
-  // EXPERIMENTAL: raw vs. normalized sentiment values
+  // Per-file sentiment normalization
   //
   // Some speakers show one sentiment (e.g. Disgusted) elevated across most
   // of a file regardless of content — likely a facial-structure bias in
@@ -231,13 +226,11 @@
   // "normalized" rather than less. Frequency-based dampening has no
   // divide-by-near-zero step, so it doesn't have that failure mode.)
   //
-  // This is intentionally temporary/experimental while evaluating whether
-  // it actually fixes the observed bias better than longer audio-analysis
-  // windows would. Remove sentimentMode / this whole block if/when one
-  // approach wins and the toggle is no longer needed.
+  // Applied unconditionally to every senticscript — this started as an
+  // experimental toggle (raw vs. normalized) to evaluate against
+  // clause-based chunking, but proved to genuinely help, so it's now just
+  // how sentiment values are computed, not an optional mode.
   // ---------------------------------------------------------------------
-  const NORMALIZATION_ELEVATED_THRESHOLD = 0.15; // raw score above which a word "counts" as elevated
-
   function computeNormalizationStats(segments) {
     const valuesBySentiment = {};
     S.SENTIMENTS.forEach((s) => { valuesBySentiment[s] = []; });
@@ -261,7 +254,7 @@
         stats[s] = { dampening: 1 };
         return;
       }
-      const elevatedCount = values.filter((v) => v > NORMALIZATION_ELEVATED_THRESHOLD).length;
+      const elevatedCount = values.filter((v) => v > S.normalization_elevated_threshold).length;
       const frequency = elevatedCount / values.length;
       stats[s] = { dampening: 1 - frequency };
     });
@@ -277,12 +270,6 @@
       out[s] = Math.max(0, Math.min(1, raw * dampening));
     });
     return out;
-  }
-
-  function effectiveSentiment(rawSentiment) {
-    return state.config.sentimentMode === 'normalized'
-      ? normalizeSentimentVector(rawSentiment)
-      : (rawSentiment || {});
   }
 
   function showTranscriptState(which, message) {
@@ -550,7 +537,7 @@
     span.dataset.start = w.start;
     span.dataset.end = w.end;
 
-    const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(effectiveSentiment(w.sentiment), state.config);
+    const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(normalizeSentimentVector(w.sentiment), state.config);
     Object.assign(span.style, cssStyle);
     span.style.lineHeight = `${lineHeightEm}em`;
 
@@ -581,7 +568,7 @@
       span.dataset.end = Math.min(t + step, seg.end);
 
       const sentimentAtT = (seg.sentimentSamples && seg.sentimentSamples[Math.floor((t - seg.start) / step)]) || {};
-      const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(effectiveSentiment(sentimentAtT), state.config);
+      const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(normalizeSentimentVector(sentimentAtT), state.config);
       Object.assign(span.style, cssStyle);
       span.style.lineHeight = `${lineHeightEm}em`;
 
@@ -730,18 +717,13 @@
     btnSettingsCancel.addEventListener('click', closeSettingsWithoutSaving);
     btnSettingsSave.addEventListener('click', saveSettings);
     btnRestoreDefaults.addEventListener('click', restoreDefaultsInPlace);
-    sentimentModeSelect.addEventListener('change', () => {
-      state.pendingConfig.sentimentMode = sentimentModeSelect.value;
-    });
   }
 
   function openSettings() {
     state.pendingConfig = {
       stylingMap: Object.assign({}, state.config.stylingMap),
-      sensitivity: Object.assign({}, state.config.sensitivity),
-      sentimentMode: state.config.sentimentMode || 'raw'
+      sensitivity: Object.assign({}, state.config.sensitivity)
     };
-    sentimentModeSelect.value = state.pendingConfig.sentimentMode;
     renderSettingsTable();
     settingsOverlay.classList.remove('hidden');
   }
@@ -799,10 +781,8 @@
     // Per spec: Restore Defaults leaves the pane open but resets values.
     state.pendingConfig = {
       stylingMap: Object.assign({}, S.default_styling_map),
-      sensitivity: Object.fromEntries(S.SENTIMENTS.map((s) => [s, S.default_sensitivity])),
-      sentimentMode: 'raw'
+      sensitivity: Object.fromEntries(S.SENTIMENTS.map((s) => [s, S.default_sensitivity]))
     };
-    sentimentModeSelect.value = 'raw';
     renderSettingsTable();
   }
 
