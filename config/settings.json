@@ -42,8 +42,17 @@
   "sensitivity_gain_multiplier": 2,
   "response_curve_k": 12,
   "normalization_elevated_threshold": 0.15,
-  "normalization_mad_multiplier": 5.2,
+  "normalization_mad_multiplier": 3.5,
   "normalized_min_style_threshold": 0.5,
+
+  "sentiment_calibration_multipliers": {
+    "Happy": 1.0,
+    "Sad": 0.8,
+    "Surprised": 1.0,
+    "Angry": 1.0,
+    "Fearful": 1.0,
+    "Disgusted": 1.0
+  },
 
   "default_styling_map": {
     "Happy": "Size",

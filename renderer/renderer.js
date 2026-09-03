@@ -263,6 +263,34 @@
     return n % 2 === 0 ? (sortedValues[mid - 1] + sortedValues[mid]) / 2 : sortedValues[mid];
   }
 
+  // Cross-file, fixed per-sentiment bias correction — distinct from (and
+  // applied before) the adaptive per-file normalization above. That
+  // normalization compares a sentiment against ITS OWN file's typical
+  // level, so it can't catch a bias that shows up consistently across many
+  // different files/speakers, only a per-file/per-speaker quirk. Sad in
+  // particular is a documented weak point for both underlying models:
+  // the audio SER model was trained on RAVDESS (actors reading fixed lines
+  // in different emotional styles), where "sad" is mainly characterized by
+  // slow/quiet/low-pitched delivery — indistinguishable from plain calm or
+  // serious conversational speech to a model trained mostly on theatrical
+  // readings. Facial "sad" expressions are also a commonly-confused Ekman
+  // category against a plain neutral/resting face in general, not specific
+  // to any one person's face shape. Neither DeepFace nor the wav2vec2 model
+  // expose any built-in way to recalibrate a specific output class, so this
+  // is a fixed multiplier applied on our side instead. Starting values are
+  // a reasoned guess, not an empirical calibration — tune per sentiment in
+  // config/settings.json based on what you actually observe.
+  function applyCalibration(rawSentiment) {
+    const out = {};
+    S.SENTIMENTS.forEach((s) => {
+      const raw = (rawSentiment && rawSentiment[s]) || 0;
+      const multiplier = (S.sentiment_calibration_multipliers && S.sentiment_calibration_multipliers[s] != null)
+        ? S.sentiment_calibration_multipliers[s] : 1.0;
+      out[s] = Math.max(0, Math.min(1, raw * multiplier));
+    });
+    return out;
+  }
+
   function computeNormalizationStats(segments) {
     const valuesBySentiment = {};
     S.SENTIMENTS.forEach((s) => { valuesBySentiment[s] = []; });
@@ -270,11 +298,13 @@
     segments.forEach((seg) => {
       if (seg.type === 'words') {
         seg.words.forEach((w) => {
-          S.SENTIMENTS.forEach((s) => valuesBySentiment[s].push((w.sentiment && w.sentiment[s]) || 0));
+          const calibrated = applyCalibration(w.sentiment);
+          S.SENTIMENTS.forEach((s) => valuesBySentiment[s].push(calibrated[s]));
         });
       } else if (seg.type === 'silence' && seg.sentimentSamples) {
         seg.sentimentSamples.forEach((sample) => {
-          S.SENTIMENTS.forEach((s) => valuesBySentiment[s].push((sample && sample[s]) || 0));
+          const calibrated = applyCalibration(sample);
+          S.SENTIMENTS.forEach((s) => valuesBySentiment[s].push(calibrated[s]));
         });
       }
     });
@@ -304,9 +334,10 @@
   function normalizeSentimentVector(rawSentiment) {
     const stats = state.normalizationStats;
     const floor = S.normalized_min_style_threshold;
+    const calibrated = applyCalibration(rawSentiment);
     const out = {};
     S.SENTIMENTS.forEach((s) => {
-      const raw = (rawSentiment && rawSentiment[s]) || 0;
+      const raw = calibrated[s];
       const dampening = (stats && stats[s] && stats[s].dampening != null) ? stats[s].dampening : 1;
       const dampened = Math.max(0, Math.min(1, raw * dampening));
       // Hard gate, no rescale: anything below the floor is zeroed, anything
