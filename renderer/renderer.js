@@ -205,32 +205,64 @@
   // ---------------------------------------------------------------------
   // Per-file sentiment normalization
   //
+  // Three stages: (1) figure out, per sentiment, what counts as "elevated"
+  // for THIS FILE specifically; (2) dampen a sentiment in proportion to
+  // how often it crosses that bar; (3) hard-gate and rescale so only
+  // genuine outliers produce any visible styling at all.
+  //
+  // Stage 1 — adaptive per-sentiment elevated threshold:
   // Some speakers show one sentiment (e.g. Disgusted) elevated across most
   // of a file regardless of content — likely a facial-structure bias in
-  // the expression model for that person, not real per-word signal.
+  // the expression model for that person, not real per-word signal. A
+  // single fixed threshold for all six sentiments doesn't account for how
+  // differently each one is naturally distributed (both across sentiments,
+  // and from file to file). Instead, each sentiment's own median and MAD
+  // (median absolute deviation) — how far its TYPICAL value deviates from
+  // its own middle — set its threshold: median + k * MAD. This is a
+  // standard robust-outlier statistic (a "modified z-score"; k=3.5 follows
+  // a commonly cited convention, Iglewicz & Hoaglin). It adapts upward for
+  // a sentiment whose normal baseline in this file is already high, and
+  // stays low for one that's normally near-zero — floored at
+  // normalization_elevated_threshold so a sentiment that's genuinely flat
+  // throughout never has tiny noise misread as "elevated" just because
+  // it's slightly above its own negligible baseline.
   //
-  // This measures, per sentiment, how often it crosses an "elevated"
-  // threshold across the whole file, and applies a single dampening
-  // multiplier per sentiment: 1 - frequency. A sentiment elevated on most
-  // words gets strongly suppressed; a sentiment that's rarely elevated is
-  // left essentially untouched, since rarity itself isn't suspicious —
-  // only *constant* elevation is.
+  // Stage 2 — frequency-based dampening:
+  // Measures how often a sentiment crosses its (now adaptive) threshold,
+  // and applies a single multiplier: 1 - frequency. Elevated on most words
+  // -> strongly suppressed; rarely elevated -> left essentially untouched,
+  // since rarity itself isn't suspicious, only *constant* elevation is.
   //
-  // (An earlier version of this rescaled each sentiment against its own
-  // 90th percentile instead. That backfired for genuinely sparse
+  // (An earlier version of stage 1 used a fixed 90th-percentile rescale
+  // instead of a comparison threshold. That backfired for genuinely sparse
   // sentiments: when real spikes affect well under 10% of words, the 90th
   // percentile lands inside the normal cluster rather than out at the rare
   // spikes, producing a near-zero spread that then massively amplified
-  // ordinary values once divided by it — the opposite of the intended
-  // effect, and the reason Disgusted/Fearful got MORE prominent under
-  // "normalized" rather than less. Frequency-based dampening has no
-  // divide-by-near-zero step, so it doesn't have that failure mode.)
+  // ordinary values once divided by it. The median+MAD approach here is a
+  // comparison, not a division, so it doesn't have that failure mode.)
+  //
+  // Stage 3 — hard gate, no rescale (see normalizeSentimentVector()):
+  // Even after dampening, a value might survive at some middling level
+  // without representing a real outlier. Anything below
+  // normalized_min_style_threshold is zeroed out entirely — no styling at
+  // all — and anything that clears the bar passes through at its own
+  // dampened value unchanged. (A gate-then-rescale variant, remapping
+  // [floor,1] back to [0,1], was tried first but made typical outliers
+  // look weaker, not stronger — see normalizeSentimentVector()'s comment
+  // for why.)
   //
   // Applied unconditionally to every senticscript — this started as an
   // experimental toggle (raw vs. normalized) to evaluate against
   // clause-based chunking, but proved to genuinely help, so it's now just
   // how sentiment values are computed, not an optional mode.
   // ---------------------------------------------------------------------
+  function median(sortedValues) {
+    const n = sortedValues.length;
+    if (n === 0) return 0;
+    const mid = Math.floor(n / 2);
+    return n % 2 === 0 ? (sortedValues[mid - 1] + sortedValues[mid]) / 2 : sortedValues[mid];
+  }
+
   function computeNormalizationStats(segments) {
     const valuesBySentiment = {};
     S.SENTIMENTS.forEach((s) => { valuesBySentiment[s] = []; });
@@ -254,7 +286,15 @@
         stats[s] = { dampening: 1 };
         return;
       }
-      const elevatedCount = values.filter((v) => v > S.normalization_elevated_threshold).length;
+
+      const sortedValues = values.slice().sort((a, b) => a - b);
+      const med = median(sortedValues);
+      const deviations = values.map((v) => Math.abs(v - med)).sort((a, b) => a - b);
+      const mad = median(deviations);
+      const adaptiveThreshold = med + S.normalization_mad_multiplier * mad;
+      const elevatedThreshold = Math.max(S.normalization_elevated_threshold, adaptiveThreshold);
+
+      const elevatedCount = values.filter((v) => v > elevatedThreshold).length;
       const frequency = elevatedCount / values.length;
       stats[s] = { dampening: 1 - frequency };
     });
@@ -263,11 +303,24 @@
 
   function normalizeSentimentVector(rawSentiment) {
     const stats = state.normalizationStats;
+    const floor = S.normalized_min_style_threshold;
     const out = {};
     S.SENTIMENTS.forEach((s) => {
       const raw = (rawSentiment && rawSentiment[s]) || 0;
       const dampening = (stats && stats[s] && stats[s].dampening != null) ? stats[s].dampening : 1;
-      out[s] = Math.max(0, Math.min(1, raw * dampening));
+      const dampened = Math.max(0, Math.min(1, raw * dampening));
+      // Hard gate, no rescale: anything below the floor is zeroed, anything
+      // above passes through at its own dampened value unchanged. Tried
+      // gate-then-rescale first (remapping [floor,1] back to [0,1]) on the
+      // reasoning that a genuine outlier should get to use the full visual
+      // range — but that rescale actually COMPRESSES anything short of an
+      // extreme value: a dampened 0.7 rescales down to just 0.4, weaker
+      // than showing 0.7 directly. Only near-1.0 values benefited from
+      // rescaling; everything more moderately-elevated looked more subdued
+      // than it should have. Passing the value through directly reads as
+      // more prominent for the common case of "clearly elevated but not
+      // extreme," which is most real outliers.
+      out[s] = dampened < floor ? 0 : dampened;
     });
     return out;
   }

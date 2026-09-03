@@ -42,6 +42,8 @@
   "sensitivity_gain_multiplier": 2,
   "response_curve_k": 12,
   "normalization_elevated_threshold": 0.15,
+  "normalization_mad_multiplier": 5.2,
+  "normalized_min_style_threshold": 0.5,
 
   "default_styling_map": {
     "Happy": "Size",
