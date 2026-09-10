@@ -10,7 +10,7 @@
   // Fallback keeps module-level state construction from throwing outright
   // if config failed to load; init() logs a clearer error and the UI still
   // becomes minimally interactive rather than a blank dead script.
-  const SAFE_S = S || { SENTIMENTS: [], STYLINGS: [], default_styling_map: {}, default_sensitivity: 0.5 };
+  const SAFE_S = S || { SENTIMENTS: [], STYLINGS: [], default_styling_map: {}, default_sensitivity: 0.5, default_audio_video_mix: 50 };
 
   // ---------------------------------------------------------------------
   // State
@@ -28,7 +28,12 @@
     // loadFromSidecar(), which deliberately never touch this).
     config: {
       stylingMap: Object.assign({}, SAFE_S.default_styling_map),
-      sensitivity: Object.fromEntries(SAFE_S.SENTIMENTS.map((s) => [s, SAFE_S.default_sensitivity]))
+      sensitivity: Object.fromEntries(SAFE_S.SENTIMENTS.map((s) => [s, SAFE_S.default_sensitivity])),
+      // 0-100. 0 = audio only, 100 = video only. Only has any effect on
+      // words that carry separate audioSentiment/videoSentiment fields
+      // (video files analyzed after this feature was added) — see
+      // blendAudioVideoSentiment().
+      audioVideoMix: SAFE_S.default_audio_video_mix
     },
     // Working copy edited live in the Settings modal, committed on Save
     pendingConfig: null,
@@ -94,6 +99,9 @@
   const settingsOverlay = el('settings-overlay');
   const settingsTableBody = el('settings-table-body');
   const btnRestoreDefaults = el('btn-restore-defaults');
+  const avMixSlider = el('av-mix-slider');
+  const avMixValue = el('av-mix-value');
+  const avMixRow = el('av-mix-row');
   const btnSettingsCancel = el('btn-settings-cancel');
   const btnSettingsSave = el('btn-settings-save');
 
@@ -263,6 +271,31 @@
     return n % 2 === 0 ? (sortedValues[mid - 1] + sortedValues[mid]) / 2 : sortedValues[mid];
   }
 
+  // First stage of the pipeline (blend -> calibrate -> normalize): mixes a
+  // word's separately-saved audioSentiment/videoSentiment at the current
+  // Audio / Video Mix setting when both are present (a video file). When
+  // only one component is available, the mix slider simply doesn't apply
+  // and that single value is used as-is — covering audio-only files
+  // (audioSentiment only, no video ever existed), silence-gap samples
+  // (video-only by design, passed as a bare sentiment dict rather than a
+  // word object — see appendSilenceDashes()), and senticscripts saved
+  // before audioSentiment/videoSentiment existed at all (a plain
+  // `sentiment` field only, checked last as the oldest fallback).
+  function blendAudioVideoSentiment(word) {
+    if (!word || !word.audioSentiment || !word.videoSentiment) {
+      return (word && (word.audioSentiment || word.sentiment)) || {};
+    }
+    const videoWeight = state.config.audioVideoMix / 100;
+    const audioWeight = 1 - videoWeight;
+    const out = {};
+    S.SENTIMENTS.forEach((s) => {
+      const a = (word.audioSentiment && word.audioSentiment[s]) || 0;
+      const v = (word.videoSentiment && word.videoSentiment[s]) || 0;
+      out[s] = audioWeight * a + videoWeight * v;
+    });
+    return out;
+  }
+
   // Cross-file, fixed per-sentiment bias correction — distinct from (and
   // applied before) the adaptive per-file normalization above. That
   // normalization compares a sentiment against ITS OWN file's typical
@@ -298,7 +331,7 @@
     segments.forEach((seg) => {
       if (seg.type === 'words') {
         seg.words.forEach((w) => {
-          const calibrated = applyCalibration(w.sentiment);
+          const calibrated = applyCalibration(blendAudioVideoSentiment(w));
           S.SENTIMENTS.forEach((s) => valuesBySentiment[s].push(calibrated[s]));
         });
       } else if (seg.type === 'silence' && seg.sentimentSamples) {
@@ -621,7 +654,7 @@
     span.dataset.start = w.start;
     span.dataset.end = w.end;
 
-    const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(normalizeSentimentVector(w.sentiment), state.config);
+    const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(normalizeSentimentVector(blendAudioVideoSentiment(w)), state.config);
     Object.assign(span.style, cssStyle);
     span.style.lineHeight = `${lineHeightEm}em`;
 
@@ -672,8 +705,15 @@
   }
 
   function reRenderTranscriptStyles() {
-    // Settings changed but words/timing didn't — just recompute styles in place.
+    // Settings changed but words/timing didn't — just recompute styles in
+    // place. Normalization stats are recomputed too (not just the render):
+    // stylingMap/sensitivity changes don't affect what counts as
+    // "elevated," but the Audio / Video Mix setting changes the actual
+    // underlying values stats are computed from, so stale stats from the
+    // previous mix ratio would be wrong. Harmless (just a little redundant
+    // work) on saves that didn't touch the mix.
     if (!state.analysis || !state.analysis.segments) return;
+    state.normalizationStats = computeNormalizationStats(state.analysis.segments);
     renderTranscript(state.analysis.segments);
   }
 
@@ -801,13 +841,40 @@
     btnSettingsCancel.addEventListener('click', closeSettingsWithoutSaving);
     btnSettingsSave.addEventListener('click', saveSettings);
     btnRestoreDefaults.addEventListener('click', restoreDefaultsInPlace);
+    avMixSlider.addEventListener('input', () => {
+      state.pendingConfig.audioVideoMix = parseInt(avMixSlider.value, 10);
+      avMixValue.textContent = `${avMixSlider.value}%`;
+    });
+  }
+
+  // Audio / Video Mix only makes sense for video files with an audio
+  // track — an audio-only file (or nothing loaded yet) has no video
+  // component to mix with at all. Disables and visually pins the slider
+  // display to "Audio only" in that case, WITHOUT touching the underlying
+  // stored preference (state.config.audioVideoMix / pendingConfig here) —
+  // so a mix set while viewing a video file is still remembered if a video
+  // is opened again later in the same session, rather than being reset
+  // just from having viewed an audio file in between.
+  function updateAvMixControl() {
+    const isVideo = state.mediaKind === 'video';
+    avMixSlider.disabled = !isVideo;
+    avMixRow.classList.toggle('disabled', !isVideo);
+    if (isVideo) {
+      avMixSlider.value = state.pendingConfig.audioVideoMix;
+      avMixValue.textContent = `${state.pendingConfig.audioVideoMix}%`;
+    } else {
+      avMixSlider.value = 0;
+      avMixValue.textContent = '0%';
+    }
   }
 
   function openSettings() {
     state.pendingConfig = {
       stylingMap: Object.assign({}, state.config.stylingMap),
-      sensitivity: Object.assign({}, state.config.sensitivity)
+      sensitivity: Object.assign({}, state.config.sensitivity),
+      audioVideoMix: state.config.audioVideoMix
     };
+    updateAvMixControl();
     renderSettingsTable();
     settingsOverlay.classList.remove('hidden');
   }
@@ -865,8 +932,10 @@
     // Per spec: Restore Defaults leaves the pane open but resets values.
     state.pendingConfig = {
       stylingMap: Object.assign({}, S.default_styling_map),
-      sensitivity: Object.fromEntries(S.SENTIMENTS.map((s) => [s, S.default_sensitivity]))
+      sensitivity: Object.fromEntries(S.SENTIMENTS.map((s) => [s, S.default_sensitivity])),
+      audioVideoMix: S.default_audio_video_mix
     };
+    updateAvMixControl();
     renderSettingsTable();
   }
 

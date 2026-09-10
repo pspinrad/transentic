@@ -39,6 +39,7 @@
   "max_chunk_sec": 6,
 
   "default_sensitivity": 0.5,
+  "default_audio_video_mix": 50,
   "sensitivity_gain_multiplier": 2,
   "response_curve_k": 12,
   "normalization_elevated_threshold": 0.15,
@@ -47,7 +48,7 @@
 
   "sentiment_calibration_multipliers": {
     "Happy": 1.0,
-    "Sad": 0.8,
+    "Sad": 0.6,
     "Surprised": 1.0,
     "Angry": 1.0,
     "Fearful": 1.0,

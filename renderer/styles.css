@@ -430,6 +430,50 @@ html, body {
   font-size: 17px;
 }
 
+.settings-group {
+  margin-bottom: 22px;
+}
+.settings-group h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.av-mix-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.av-mix-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.av-mix-endpoint-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.av-mix-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 36px;
+  text-align: right;
+}
+
+.av-mix-row input[type="range"]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.av-mix-row.disabled .av-mix-endpoint-label,
+.av-mix-row.disabled .av-mix-value {
+  opacity: 0.4;
+}
+
 .settings-hint {
   color: var(--text-muted);
   font-size: 13px;

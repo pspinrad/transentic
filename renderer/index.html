@@ -120,15 +120,30 @@
   <!-- ============ SETTINGS MODAL ============ -->
   <div id="settings-overlay" class="overlay hidden">
     <div class="settings-modal">
-      <h2>Sentiment Styling</h2>
-      <p class="settings-hint">Assign each sentiment a text styling and how strongly it responds. With every sensitivity at 0, the transcript renders as plain text.</p>
+      <h2>Settings</h2>
 
-      <table class="settings-table">
-        <thead>
-          <tr><th>Sentiment</th><th>Styling</th><th>Sensitivity</th></tr>
-        </thead>
-        <tbody id="settings-table-body"></tbody>
-      </table>
+      <section class="settings-group">
+        <h3>Sentiment Styling</h3>
+        <p class="settings-hint">Assign each sentiment a text styling and how strongly it responds. With every sensitivity at 0, the transcript renders as plain text.</p>
+
+        <table class="settings-table">
+          <thead>
+            <tr><th>Sentiment</th><th>Styling</th><th>Sensitivity</th></tr>
+          </thead>
+          <tbody id="settings-table-body"></tbody>
+        </table>
+      </section>
+
+      <section class="settings-group">
+        <h3>Audio / Video Mix</h3>
+        <p class="settings-hint">Percentage of sentiment value derived from audio, as opposed to video (only applies to video with audio track).</p>
+        <div class="av-mix-row" id="av-mix-row">
+          <span class="av-mix-endpoint-label">Audio only (0%)</span>
+          <input type="range" id="av-mix-slider" min="0" max="100" step="1" value="50" />
+          <span class="av-mix-endpoint-label">Video only (100%)</span>
+          <span class="av-mix-value" id="av-mix-value">50%</span>
+        </div>
+      </section>
 
       <div class="settings-actions">
         <button id="btn-restore-defaults" class="btn btn-ghost">Restore Defaults</button>

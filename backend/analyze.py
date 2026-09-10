@@ -496,10 +496,6 @@ def video_sentiment_for_window(video_reader, start, end, fps_sample=2):
     return {s: v / counted for s, v in accum.items()}
 
 
-def average_sentiment_dicts(a, b):
-    return {s: (a.get(s, 0.0) + b.get(s, 0.0)) / 2 for s in SENTIMENTS}
-
-
 # Minimum wall-clock time between progress-file writes. This is a time
 # throttle rather than "every N words" specifically because per-word
 # processing speed varies a lot (video with facial-expression sampling is
@@ -664,16 +660,36 @@ def build_segments(whisper_segments, duration, media_kind, wav_path, video_path,
                     a_sent = audio_sentiment_for_window(audio_clf, sound_file, chunk_start, chunk_end)
                     if media_kind == 'video':
                         v_sent = video_sentiment_for_window(video_reader, chunk_start, chunk_end)
-                        sentiment = average_sentiment_dicts(a_sent, v_sent)
                     else:
-                        sentiment = a_sent
+                        v_sent = None
 
                     # Every word in this chunk shares the same sentiment
-                    # dict reference — safe since it's never mutated after
-                    # this point, and JSON serialization doesn't care about
-                    # object identity, only value.
+                    # dict reference(s) — safe since they're never mutated
+                    # after this point, and JSON serialization doesn't care
+                    # about object identity, only value.
                     for w in chunk_words:
-                        words_out.append({'word': w['word'], 'start': w['start'], 'end': w['end'], 'sentiment': sentiment})
+                        if media_kind == 'video':
+                            # No blended 'sentiment' field here — it would
+                            # just be a fixed 50/50 average of the two
+                            # fields below, fully derivable from them and
+                            # not worth persisting redundantly. The frontend
+                            # blends audioSentiment/videoSentiment at
+                            # whatever ratio the Audio / Video Mix setting
+                            # currently holds (see blendAudioVideoSentiment()
+                            # in renderer.js) rather than relying on a fixed
+                            # ratio baked in at analysis time.
+                            word_entry = {
+                                'word': w['word'], 'start': w['start'], 'end': w['end'],
+                                'audioSentiment': a_sent, 'videoSentiment': v_sent
+                            }
+                        else:
+                            # Audio-only files have no video component, so
+                            # there's no videoSentiment counterpart here —
+                            # named audioSentiment anyway (rather than the
+                            # older plain 'sentiment') purely for schema
+                            # consistency with video files.
+                            word_entry = {'word': w['word'], 'start': w['start'], 'end': w['end'], 'audioSentiment': a_sent}
+                        words_out.append(word_entry)
 
                     words_done += len(chunk_words)
                     now = time.monotonic()
