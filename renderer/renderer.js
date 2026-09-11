@@ -25,7 +25,10 @@
 
     // Active styling configuration — session-level, not tied to any
     // particular source file or senticscript (see saveTranscript() /
-    // loadFromSidecar(), which deliberately never touch this).
+    // loadFromSidecar(), which deliberately never touch this). The
+    // Settings sidebar edits this object directly — no separate draft/
+    // pending-vs-committed state, since there's no Save/Cancel anymore;
+    // changes apply live (see scheduleLiveRestyle()).
     config: {
       stylingMap: Object.assign({}, SAFE_S.default_styling_map),
       sensitivity: Object.fromEntries(SAFE_S.SENTIMENTS.map((s) => [s, SAFE_S.default_sensitivity])),
@@ -35,15 +38,19 @@
       // blendAudioVideoSentiment().
       audioVideoMix: SAFE_S.default_audio_video_mix
     },
-    // Working copy edited live in the Settings modal, committed on Save
-    pendingConfig: null,
 
     // Per-sentiment {baseline, spread} computed once whenever a new
     // analysis loads, used by normalizeSentimentVector() — see its comment
     // block for what this does and why it's applied unconditionally.
     normalizationStats: null,
 
-    wordEls: [],                 // flat list of {el, start, end} for playhead sync + seeking
+    // {el, start, end, kind, raw} per rendered word/silence-marker span.
+    // kind is 'word' | 'silence'; raw is the underlying word object (for
+    // 'word') or bare sentiment dict (for 'silence') — used by
+    // restyleTranscriptInPlace() to recompute each element's style
+    // in-place without rebuilding the DOM. Also used for playhead sync and
+    // search.
+    wordEls: [],
     isSeeking: false,
 
     // Transcript search
@@ -96,14 +103,14 @@
   const btnSearchNext = el('btn-search-next');
   const btnSearchClose = el('btn-search-close');
 
-  const settingsOverlay = el('settings-overlay');
+  const settingsSidebar = el('settings-sidebar');
   const settingsTableBody = el('settings-table-body');
   const btnRestoreDefaults = el('btn-restore-defaults');
   const avMixSlider = el('av-mix-slider');
   const avMixValue = el('av-mix-value');
   const avMixRow = el('av-mix-row');
-  const btnSettingsCancel = el('btn-settings-cancel');
-  const btnSettingsSave = el('btn-settings-save');
+  const btnCloseSidebar = el('btn-close-sidebar');
+  const appEl = el('app');
 
   // ---------------------------------------------------------------------
   // Init
@@ -116,6 +123,12 @@
     wireSettingsModal();
     wireSearchBar();
     btnCancelAnalysis.addEventListener('click', handleCancelAnalysis);
+
+    // The sidebar is persistent now (not a modal rebuilt each time it
+    // opens), so the styling table needs populating once up front rather
+    // than on open — this was the actual cause of the dropdowns/sliders
+    // appearing to be missing.
+    renderSettingsTable();
 
     if (!window.electronAPI) {
       console.error(
@@ -197,6 +210,12 @@
     const meta = result.metadata || {};
     mediaTitleEl.textContent = meta.title || state.filePath.split(/[\\/]/).pop();
     mediaSubtitleEl.textContent = [meta.date, formatDuration(result.durationSec)].filter(Boolean).join(' · ');
+
+    // The sidebar can stay open continuously now (it's not a modal that
+    // gets rebuilt each time it opens), so its Audio / Video Mix control
+    // needs to be kept in sync with whichever file is currently loaded,
+    // not just refreshed on open.
+    updateAvMixControl();
 
     drawProgressSamples(result.waveform || []);
 
@@ -660,7 +679,7 @@
 
     span.addEventListener('click', () => seekTo(w.start));
     transcriptBody.appendChild(span);
-    state.wordEls.push({ el: span, start: w.start, end: w.end });
+    state.wordEls.push({ el: span, start: w.start, end: w.end, kind: 'word', raw: w });
 
     if (sentenceBreaks && sentenceBreaks.has(w)) {
       transcriptBody.appendChild(document.createElement('br'));
@@ -691,7 +710,7 @@
 
       span.addEventListener('click', () => seekTo(t));
       transcriptBody.appendChild(span);
-      state.wordEls.push({ el: span, start: t, end: t + step });
+      state.wordEls.push({ el: span, start: t, end: t + step, kind: 'silence', raw: sentimentAtT });
     }
   }
 
@@ -704,17 +723,45 @@
     transcriptBody.appendChild(div);
   }
 
-  function reRenderTranscriptStyles() {
-    // Settings changed but words/timing didn't — just recompute styles in
-    // place. Normalization stats are recomputed too (not just the render):
-    // stylingMap/sensitivity changes don't affect what counts as
-    // "elevated," but the Audio / Video Mix setting changes the actual
-    // underlying values stats are computed from, so stale stats from the
-    // previous mix ratio would be wrong. Harmless (just a little redundant
-    // work) on saves that didn't touch the mix.
-    if (!state.analysis || !state.analysis.segments) return;
-    state.normalizationStats = computeNormalizationStats(state.analysis.segments);
-    renderTranscript(state.analysis.segments);
+  // Applies the current state.config to every already-rendered word/
+  // silence-marker span IN PLACE — updates each element's .style
+  // properties directly rather than tearing down and recreating the DOM
+  // (which is what renderTranscript() does). Only ever changes styling,
+  // never text/structure/listeners, so it's safe to reuse existing
+  // elements: computeWordStyle() always returns a fully exhaustive style
+  // object (every property explicitly set on every call, even when a
+  // sentiment is inactive), so there's no risk of a property left stuck
+  // from a previous styling. Search highlights (a separate classList
+  // state, untouched by .style assignment) survive this automatically —
+  // no need to re-run search afterward the way a full render does.
+  function restyleTranscriptInPlace() {
+    state.wordEls.forEach(({ el: wEl, kind, raw }) => {
+      const rawSentiment = kind === 'word' ? blendAudioVideoSentiment(raw) : raw;
+      const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(normalizeSentimentVector(rawSentiment), state.config);
+      Object.assign(wEl.style, cssStyle);
+      wEl.style.lineHeight = `${lineHeightEm}em`;
+    });
+  }
+
+  let liveRestyleDebounceTimer = null;
+  // Called on every Settings sidebar interaction (a styling dropdown, a
+  // sensitivity slider, the Audio / Video Mix slider). The debounce here
+  // is what makes "live" feel safe rather than risky: a dragged slider can
+  // fire input events dozens of times a second, and normalization stats
+  // (a couple of array sorts per sentiment across every word) plus a full
+  // style pass across every rendered span isn't free on a long transcript.
+  // Waiting for a short pause in activity means dragging always feels
+  // instantly responsive (the slider's own position is native/immediate,
+  // independent of this), while the transcript catches up a beat after you
+  // stop, rather than queuing up dozens of expensive updates per second of
+  // dragging. Same pattern already used for the search input's debounce.
+  function scheduleLiveRestyle() {
+    clearTimeout(liveRestyleDebounceTimer);
+    liveRestyleDebounceTimer = setTimeout(() => {
+      if (!state.analysis || !state.analysis.segments) return;
+      state.normalizationStats = computeNormalizationStats(state.analysis.segments);
+      restyleTranscriptInPlace();
+    }, 120);
   }
 
   // ---------------------------------------------------------------------
@@ -834,49 +881,51 @@
   }
 
   // ---------------------------------------------------------------------
-  // Settings modal
+  // Settings sidebar
   // ---------------------------------------------------------------------
   function wireSettingsModal() {
-    btnSettings.addEventListener('click', openSettings);
-    btnSettingsCancel.addEventListener('click', closeSettingsWithoutSaving);
-    btnSettingsSave.addEventListener('click', saveSettings);
+    btnSettings.addEventListener('click', toggleSettingsSidebar);
+    // Reuses the same toggle rather than a dedicated "close" function —
+    // this button is only ever reachable while the sidebar is already
+    // open, so toggling always means closing from here, and reusing it
+    // keeps the gear icon's active-highlight state in sync automatically.
+    btnCloseSidebar.addEventListener('click', toggleSettingsSidebar);
     btnRestoreDefaults.addEventListener('click', restoreDefaultsInPlace);
     avMixSlider.addEventListener('input', () => {
-      state.pendingConfig.audioVideoMix = parseInt(avMixSlider.value, 10);
+      state.config.audioVideoMix = parseInt(avMixSlider.value, 10);
       avMixValue.textContent = `${avMixSlider.value}%`;
+      scheduleLiveRestyle();
     });
+  }
+
+  function toggleSettingsSidebar() {
+    const isOpen = appEl.classList.toggle('sidebar-open');
+    btnSettings.classList.toggle('active', isOpen);
   }
 
   // Audio / Video Mix only makes sense for video files with an audio
   // track — an audio-only file (or nothing loaded yet) has no video
   // component to mix with at all. Disables and visually pins the slider
   // display to "Audio only" in that case, WITHOUT touching the underlying
-  // stored preference (state.config.audioVideoMix / pendingConfig here) —
-  // so a mix set while viewing a video file is still remembered if a video
-  // is opened again later in the same session, rather than being reset
-  // just from having viewed an audio file in between.
+  // stored preference (state.config.audioVideoMix) — so a mix set while
+  // viewing a video file is still remembered if a video is opened again
+  // later in the same session, rather than being reset just from having
+  // viewed an audio file in between. Called whenever the loaded file's
+  // media kind might have changed (see applyAnalysisResult() /
+  // loadFromSidecar()) — the sidebar can stay open continuously now, so
+  // this needs to stay in sync with whatever file is currently loaded,
+  // not just refreshed when the sidebar happens to open.
   function updateAvMixControl() {
     const isVideo = state.mediaKind === 'video';
     avMixSlider.disabled = !isVideo;
     avMixRow.classList.toggle('disabled', !isVideo);
     if (isVideo) {
-      avMixSlider.value = state.pendingConfig.audioVideoMix;
-      avMixValue.textContent = `${state.pendingConfig.audioVideoMix}%`;
+      avMixSlider.value = state.config.audioVideoMix;
+      avMixValue.textContent = `${state.config.audioVideoMix}%`;
     } else {
       avMixSlider.value = 0;
       avMixValue.textContent = '0%';
     }
-  }
-
-  function openSettings() {
-    state.pendingConfig = {
-      stylingMap: Object.assign({}, state.config.stylingMap),
-      sensitivity: Object.assign({}, state.config.sensitivity),
-      audioVideoMix: state.config.audioVideoMix
-    };
-    updateAvMixControl();
-    renderSettingsTable();
-    settingsOverlay.classList.remove('hidden');
   }
 
   function renderSettingsTable() {
@@ -893,11 +942,12 @@
         const opt = document.createElement('option');
         opt.value = styling;
         opt.textContent = styling;
-        if (state.pendingConfig.stylingMap[sentiment] === styling) opt.selected = true;
+        if (state.config.stylingMap[sentiment] === styling) opt.selected = true;
         select.appendChild(opt);
       });
       select.addEventListener('change', () => {
-        state.pendingConfig.stylingMap[sentiment] = select.value;
+        state.config.stylingMap[sentiment] = select.value;
+        scheduleLiveRestyle();
       });
       tdStyling.appendChild(select);
 
@@ -909,13 +959,14 @@
       slider.min = '0';
       slider.max = '1';
       slider.step = '0.01';
-      slider.value = state.pendingConfig.sensitivity[sentiment];
+      slider.value = state.config.sensitivity[sentiment];
       const valueLabel = document.createElement('span');
       valueLabel.className = 'sensitivity-value';
       valueLabel.textContent = Number(slider.value).toFixed(2);
       slider.addEventListener('input', () => {
-        state.pendingConfig.sensitivity[sentiment] = parseFloat(slider.value);
+        state.config.sensitivity[sentiment] = parseFloat(slider.value);
         valueLabel.textContent = Number(slider.value).toFixed(2);
+        scheduleLiveRestyle();
       });
       wrap.appendChild(slider);
       wrap.appendChild(valueLabel);
@@ -929,26 +980,20 @@
   }
 
   function restoreDefaultsInPlace() {
-    // Per spec: Restore Defaults leaves the pane open but resets values.
-    state.pendingConfig = {
+    state.config = {
       stylingMap: Object.assign({}, S.default_styling_map),
       sensitivity: Object.fromEntries(S.SENTIMENTS.map((s) => [s, S.default_sensitivity])),
       audioVideoMix: S.default_audio_video_mix
     };
     updateAvMixControl();
     renderSettingsTable();
-  }
-
-  function closeSettingsWithoutSaving() {
-    state.pendingConfig = null;
-    settingsOverlay.classList.add('hidden');
-  }
-
-  function saveSettings() {
-    state.config = state.pendingConfig;
-    state.pendingConfig = null;
-    settingsOverlay.classList.add('hidden');
-    reRenderTranscriptStyles();
+    // A discrete click, not a rapid-fire drag — apply immediately rather
+    // than through the debounce, which exists specifically to smooth out
+    // dozens-of-events-per-second slider dragging.
+    if (state.analysis && state.analysis.segments) {
+      state.normalizationStats = computeNormalizationStats(state.analysis.segments);
+      restyleTranscriptInPlace();
+    }
   }
 
   // ---------------------------------------------------------------------

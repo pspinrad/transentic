@@ -80,7 +80,7 @@
               <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
           </div>
-          <button id="btn-settings" class="icon-btn" title="Sentiment styling settings">
+          <button id="btn-settings" class="icon-btn" title="Sentiment Styling settings">
             <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19.14 12.94a7.14 7.14 0 0 0 .06-.94 7.14 7.14 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.62-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.4.32.6.22l2.39-.96c.49.38 1.03.7 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.2.1.46.02.6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
           </button>
         </div>
@@ -115,43 +115,48 @@
       <div id="transcript-body" class="transcript-body hidden"></div>
     </section>
 
-  </div>
-
-  <!-- ============ SETTINGS MODAL ============ -->
-  <div id="settings-overlay" class="overlay hidden">
-    <div class="settings-modal">
-      <h2>Settings</h2>
-
-      <section class="settings-group">
-        <h3>Sentiment Styling</h3>
-        <p class="settings-hint">Assign each sentiment a text styling and how strongly it responds. With every sensitivity at 0, the transcript renders as plain text.</p>
-
-        <table class="settings-table">
-          <thead>
-            <tr><th>Sentiment</th><th>Styling</th><th>Sensitivity</th></tr>
-          </thead>
-          <tbody id="settings-table-body"></tbody>
-        </table>
-      </section>
-
-      <section class="settings-group">
-        <h3>Audio / Video Mix</h3>
-        <p class="settings-hint">Percentage of sentiment value derived from audio, as opposed to video (only applies to video with audio track).</p>
-        <div class="av-mix-row" id="av-mix-row">
-          <span class="av-mix-endpoint-label">Audio only (0%)</span>
-          <input type="range" id="av-mix-slider" min="0" max="100" step="1" value="50" />
-          <span class="av-mix-endpoint-label">Video only (100%)</span>
-          <span class="av-mix-value" id="av-mix-value">50%</span>
+    <!-- ============ SETTINGS SIDEBAR ============ -->
+    <!-- Persistent, collapsible — not a modal. Controls apply live (see
+         scheduleLiveRestyle() in renderer.js); there's no Save/Cancel
+         since there's no separate "draft" state to commit or discard. -->
+    <aside id="settings-sidebar" class="settings-sidebar">
+      <div class="settings-sidebar-inner">
+        <div class="settings-sidebar-header">
+          <h2>Settings</h2>
+          <button id="btn-close-sidebar" class="icon-btn icon-btn-small" title="Close settings">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
         </div>
-      </section>
 
-      <div class="settings-actions">
-        <button id="btn-restore-defaults" class="btn btn-ghost">Restore Defaults</button>
-        <div class="spacer"></div>
-        <button id="btn-settings-cancel" class="btn btn-ghost">Cancel</button>
-        <button id="btn-settings-save" class="btn btn-primary">Save</button>
+        <section class="settings-group">
+          <h3>Sentiment Styling</h3>
+          <p class="settings-hint">Assign each sentiment a text styling and how strongly it responds. With every sensitivity at 0, the transcript renders as plain text.</p>
+
+          <table class="settings-table">
+            <thead>
+              <tr><th>Sentiment</th><th>Styling</th><th>Sensitivity</th></tr>
+            </thead>
+            <tbody id="settings-table-body"></tbody>
+          </table>
+        </section>
+
+        <section class="settings-group">
+          <h3>Audio / Video Mix</h3>
+          <p class="settings-hint">Percentage of sentiment value derived from audio, as opposed to video (only applies to video with audio track).</p>
+          <div class="av-mix-row" id="av-mix-row">
+            <span class="av-mix-endpoint-label">Audio only (0%)</span>
+            <input type="range" id="av-mix-slider" min="0" max="100" step="1" value="50" />
+            <span class="av-mix-endpoint-label">Video only (100%)</span>
+            <span class="av-mix-value" id="av-mix-value">50%</span>
+          </div>
+        </section>
+
+        <div class="settings-actions">
+          <button id="btn-restore-defaults" class="btn btn-ghost">Restore Defaults</button>
+        </div>
       </div>
-    </div>
+    </aside>
+
   </div>
 
   <!-- window.APP_SETTINGS is injected by preload.js from config/settings.json -->
