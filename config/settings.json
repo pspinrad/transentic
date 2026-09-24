@@ -36,23 +36,23 @@
 
   "wordless_sample_rate_sec": 3,
   "skip_interval_sec": 10,
-  "max_chunk_sec": 6,
+  "max_chunk_sec": 4.5,
 
   "default_sensitivity": 0.5,
   "default_audio_video_mix": 50,
   "sensitivity_gain_multiplier": 2,
   "response_curve_k": 12,
   "normalization_elevated_threshold": 0.15,
-  "normalization_mad_multiplier": 3.5,
-  "normalized_min_style_threshold": 0.5,
+  "normalization_mad_multiplier": 5.2,
+  "normalized_min_style_threshold": 0.25,
 
   "sentiment_calibration_multipliers": {
     "Happy": 1.0,
-    "Sad": 0.6,
+    "Sad": 0.8,
     "Surprised": 1.0,
-    "Angry": 1.0,
-    "Fearful": 1.0,
-    "Disgusted": 1.0
+    "Angry": 0.8,
+    "Fearful": 0.8,
+    "Disgusted": 0.6
   },
 
   "default_styling_map": {
