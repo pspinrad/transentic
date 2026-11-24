@@ -152,6 +152,7 @@ async function handleOpenSavedTranscript() {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     const sidecar = extractSenticscriptJson(raw);
+    sidecar.sourceFilePath = resolveSourcePath(sidecar.sourceFilePath, filePath);
     mainWindow.webContents.send('transcript:loaded', { sidecarPath: filePath, sidecar });
   } catch (e) {
     dialog.showErrorBox('Could not open senticscript', e.message);
@@ -167,6 +168,43 @@ function extractSenticscriptJson(raw) {
     throw new Error('No JSON sentiment-data block found in this file — is it actually a .senticscript.md file?');
   }
   return JSON.parse(match[1]);
+}
+
+// sourceFilePath is stored relative to the senticscript's own directory
+// (forward slashes, so a file written on one OS reads on another), e.g.
+// "talk.mp4" or "../media/talk.mp4". On load it's resolved back to an
+// absolute path against the senticscript's location, so the renderer only
+// ever sees absolute paths. Files saved before this change hold an absolute
+// path, which passes through unchanged. If that absolute path no longer
+// exists but a file with the same name sits next to the senticscript, that
+// is used instead — the common "moved the pair together" case.
+function resolveSourcePath(sourceFilePath, senticscriptPath) {
+  if (!sourceFilePath) return sourceFilePath;
+  const dir = path.dirname(senticscriptPath);
+  if (!path.isAbsolute(sourceFilePath)) return path.resolve(dir, sourceFilePath);
+  if (!fs.existsSync(sourceFilePath)) {
+    const sibling = path.join(dir, path.basename(sourceFilePath));
+    if (fs.existsSync(sibling)) return sibling;
+  }
+  return sourceFilePath;
+}
+
+// Rewrites the JSON block's sourceFilePath (absolute, as held in renderer
+// state) to be relative to where the senticscript is actually being written.
+// Done here rather than in the renderer because only main knows the final
+// path chosen in the Save dialog. path.relative() returns an absolute path
+// when none exists (e.g. a different Windows drive), which is kept as-is.
+function relativizeSourcePath(fileContent, senticscriptPath) {
+  const match = fileContent.match(/```json\s*\n([\s\S]*?)\n```/);
+  if (!match) return fileContent;
+  const sidecar = JSON.parse(match[1]);
+  if (!sidecar.sourceFilePath || !path.isAbsolute(sidecar.sourceFilePath)) return fileContent;
+  const rel = path.relative(path.dirname(senticscriptPath), sidecar.sourceFilePath);
+  sidecar.sourceFilePath = path.isAbsolute(rel) ? rel : rel.split(path.sep).join('/');
+  const newBlock = JSON.stringify(sidecar, null, 2);
+  return fileContent.slice(0, match.index) +
+    '```json\n' + newBlock + '\n```' +
+    fileContent.slice(match.index + match[0].length);
 }
 
 // Tracks the currently-running backend analysis process (only ever one at
@@ -307,7 +345,7 @@ ipcMain.handle('file:saveTranscript', async (_evt, { fileContent, suggestedName,
     filePath = currentSavedPath;
   }
 
-  fs.writeFileSync(filePath, fileContent, 'utf-8');
+  fs.writeFileSync(filePath, relativizeSourcePath(fileContent, filePath), 'utf-8');
   return { canceled: false, filePath };
 });
 
