@@ -172,10 +172,7 @@
     sourceLoaded.classList.remove('hidden');
     videoWrap.classList.toggle('hidden', state.mediaKind !== 'video');
 
-    state.mediaEl = state.mediaKind === 'video' ? videoEl : audioEl;
-    const fileUrl = 'file://' + encodeURI(filePath).replace(/#/g, '%23');
-    state.mediaEl.src = fileUrl;
-    attachMediaElEvents();
+    setMediaSource(filePath);
 
     mediaTitleEl.textContent = filePath.split(/[\\/]/).pop();
     mediaSubtitleEl.textContent = 'Loading…';
@@ -785,14 +782,60 @@
     });
   }
 
+  // Fully releases whatever media is currently loaded in BOTH elements.
+  // Just assigning a new .src to an element that's mid-playback (or was
+  // left in an errored/ended state) isn't a reliable reset in Chromium:
+  // the old element keeps its decoder/file handle, a pending play()
+  // promise can be aborted underneath you, and switching video <-> audio
+  // leaves the previous element still playing in the background.
+  // removeAttribute('src') + load() is the standard way to abort and release.
+  function teardownMedia() {
+    [videoEl, audioEl].forEach((m) => {
+      m.pause();
+      m.removeAttribute('src');
+      m.load();
+    });
+    state.mediaEl = null;
+    setPlayIcon(false);
+    progressFill.style.width = '0%';
+    progressHandle.style.left = '0%';
+    timeCurrent.textContent = formatDuration(0);
+    timeTotal.textContent = formatDuration(0);
+  }
+
+  // Single entry point for pointing the source pane at a file, used by
+  // both openMedia() and loadFromSidecar() so they can't drift apart.
+  function setMediaSource(filePath) {
+    teardownMedia();
+    state.mediaEl = state.mediaKind === 'video' ? videoEl : audioEl;
+    state.mediaEl.src = 'file://' + encodeURI(filePath).replace(/#/g, '%23');
+    attachMediaElEvents();
+    state.mediaEl.load();
+  }
+
+  // Elements are reused for the life of the window, so listeners must be
+  // attached exactly once per element (anonymous handlers don't dedupe the
+  // way a repeated named function does).
+  const wiredMediaEls = new WeakSet();
   function attachMediaElEvents() {
     const m = state.mediaEl;
     m.playbackRate = parseFloat(speedSelect.value);
+    if (wiredMediaEls.has(m)) return;
+    wiredMediaEls.add(m);
     m.addEventListener('timeupdate', onTimeUpdate);
-    m.addEventListener('play', () => setPlayIcon(true));
-    m.addEventListener('pause', () => setPlayIcon(false));
+    m.addEventListener('play', () => { if (m === state.mediaEl) setPlayIcon(true); });
+    m.addEventListener('pause', () => { if (m === state.mediaEl) setPlayIcon(false); });
     m.addEventListener('loadedmetadata', () => {
-      timeTotal.textContent = formatDuration(m.duration);
+      if (m === state.mediaEl) timeTotal.textContent = formatDuration(m.duration);
+    });
+    // Previously load failures were completely silent, which made a black,
+    // unplayable video indistinguishable from a decode problem, a moved/
+    // missing source file, or a state bug. Surface the real reason.
+    m.addEventListener('error', () => {
+      if (m !== state.mediaEl || !m.error) return;
+      const names = { 1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED' };
+      console.error('Media element error', m.error.code, names[m.error.code], m.error.message, m.currentSrc);
+      mediaSubtitleEl.textContent = `Can't play source (${names[m.error.code] || m.error.code}) — file moved, or unsupported codec?`;
     });
   }
 
@@ -1099,9 +1142,7 @@
       sourceEmpty.classList.add('hidden');
       sourceLoaded.classList.remove('hidden');
       videoWrap.classList.toggle('hidden', state.mediaKind !== 'video');
-      state.mediaEl = state.mediaKind === 'video' ? videoEl : audioEl;
-      state.mediaEl.src = 'file://' + encodeURI(sidecar.sourceFilePath).replace(/#/g, '%23');
-      attachMediaElEvents();
+      setMediaSource(sidecar.sourceFilePath);
     }
 
     applyAnalysisResult(state.analysis);
