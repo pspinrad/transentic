@@ -39,20 +39,25 @@
   "max_chunk_sec": 4.5,
 
   "default_sensitivity": 0.5,
-  "default_audio_video_mix": 50,
+  "default_audio_video_mix": 40,
   "sensitivity_gain_multiplier": 2,
   "response_curve_k": 12,
-  "normalization_elevated_threshold": 0.15,
+  "normalization_elevated_threshold": 0.2,
   "normalization_mad_multiplier": 5.2,
   "normalized_min_style_threshold": 0.25,
 
+  "corroboration_proximity_weights": [1, 0.8, 0.6, 0.3],
+  "corroboration_same_channel_weight": 0.5,
+  "corroboration_uncorroborated_gain": 0.5,
+  "corroboration_corroborated_gain": 2.0,
+
   "sentiment_calibration_multipliers": {
     "Happy": 1.0,
-    "Sad": 0.8,
+    "Sad": 1.0,
     "Surprised": 1.0,
-    "Angry": 0.8,
-    "Fearful": 0.8,
-    "Disgusted": 0.6
+    "Angry": 1.0,
+    "Fearful": 1.0,
+    "Disgusted": 1.0
   },
 
   "default_styling_map": {

@@ -43,6 +43,7 @@
     // analysis loads, used by normalizeSentimentVector() — see its comment
     // block for what this does and why it's applied unconditionally.
     normalizationStats: null,
+    corroboration: null,   // see computeCorroboration()
 
     // {el, start, end, kind, raw} per rendered word/silence-marker span.
     // kind is 'word' | 'silence'; raw is the underlying word object (for
@@ -221,7 +222,7 @@
       return;
     }
 
-    state.normalizationStats = computeNormalizationStats(result.segments || []);
+    refreshSentimentModel(result.segments || []);
     renderTranscript(result.segments || []);
     showTranscriptState('body');
   }
@@ -340,6 +341,17 @@
     return out;
   }
 
+  // Per-file "elevated" bar for one series of values: median + k * MAD,
+  // floored at normalization_elevated_threshold (see the Stage 1 comment
+  // above for the reasoning). Shared by the frequency dampening and the
+  // cross-channel corroboration below so both agree on what "elevated" means.
+  function adaptiveElevatedThreshold(values) {
+    const sorted = values.slice().sort((a, b) => a - b);
+    const med = median(sorted);
+    const mad = median(values.map((v) => Math.abs(v - med)).sort((a, b) => a - b));
+    return Math.max(S.normalization_elevated_threshold, med + S.normalization_mad_multiplier * mad);
+  }
+
   function computeNormalizationStats(segments) {
     const valuesBySentiment = {};
     S.SENTIMENTS.forEach((s) => { valuesBySentiment[s] = []; });
@@ -366,12 +378,7 @@
         return;
       }
 
-      const sortedValues = values.slice().sort((a, b) => a - b);
-      const med = median(sortedValues);
-      const deviations = values.map((v) => Math.abs(v - med)).sort((a, b) => a - b);
-      const mad = median(deviations);
-      const adaptiveThreshold = med + S.normalization_mad_multiplier * mad;
-      const elevatedThreshold = Math.max(S.normalization_elevated_threshold, adaptiveThreshold);
+      const elevatedThreshold = adaptiveElevatedThreshold(values);
 
       const elevatedCount = values.filter((v) => v > elevatedThreshold).length;
       const frequency = elevatedCount / values.length;
@@ -380,7 +387,7 @@
     return stats;
   }
 
-  function normalizeSentimentVector(rawSentiment) {
+  function normalizeSentimentVector(rawSentiment, gains) {
     const stats = state.normalizationStats;
     const floor = S.normalized_min_style_threshold;
     const calibrated = applyCalibration(rawSentiment);
@@ -388,7 +395,10 @@
     S.SENTIMENTS.forEach((s) => {
       const raw = calibrated[s];
       const dampening = (stats && stats[s] && stats[s].dampening != null) ? stats[s].dampening : 1;
-      const dampened = Math.max(0, Math.min(1, raw * dampening));
+      // Cross-channel corroboration gain (see computeCorroboration()); 1 =
+      // no adjustment, so audio-only files and old senticscripts are unchanged.
+      const gain = (gains && gains[s] != null) ? gains[s] : 1;
+      const dampened = Math.max(0, Math.min(1, raw * dampening * gain));
       // Hard gate, no rescale: anything below the floor is zeroed, anything
       // above passes through at its own dampened value unchanged. Tried
       // gate-then-rescale first (remapping [floor,1] back to [0,1]) on the
@@ -403,6 +413,175 @@
       out[s] = dampened < floor ? 0 : dampened;
     });
     return out;
+  }
+
+  // ---------------------------------------------------------------------
+  // Cross-channel corroboration (video files with audio)
+  //
+  // Both models are noisy, and biased differently (e.g. the audio model
+  // reports Disgusted far more often than the video model). But when the
+  // voice AND the face show the same sentiment at about the same moment,
+  // it's usually real. So after the Audio / Video Mix has produced the base
+  // value for a block, that value is scaled by a gain: below 1 when neither
+  // channel's elevation is backed up by the other, up toward
+  // corroboration_corroborated_gain when they agree.
+  //
+  // The steps, per sentiment, over a timeline of BLOCKS (one analysis chunk
+  // of words, or one 3 s silence sample — never individual words, since all
+  // words in a chunk share one value):
+  //   1. Per-channel elevation: each channel is judged against its OWN
+  //      file-level bar (adaptiveElevatedThreshold), ramping from 0 at the
+  //      bar to 1 at a value as far above the bar as the bar is above the
+  //      median, then multiplied by (1 - how often that channel is
+  //      elevated) — a channel that's elevated constantly is weak evidence.
+  //      This puts audio and video on comparable footing before they're
+  //      compared, instead of comparing raw model scores.
+  //   2. Proximity-weighted support: a channel's support at block i is its
+  //      elevation at nearby blocks times corroboration_proximity_weights
+  //      (default [1, 2/3, 1/3] for 0, 1, 2 blocks away; nothing further).
+  //   3. Corroboration C at block i: the fuzzy AND (min) of one channel's
+  //      elevation AT i with the OTHER channel's support around i, whichever
+  //      way round is larger. Exact overlap gives full strength; a
+  //      neighbour one block over gives 2/3, and so on. A weaker
+  //      same-channel term is OR'd in: a channel's elevation at i ANDed with
+  //      its OWN support at neighbouring blocks (not i itself), times
+  //      corroboration_same_channel_weight — sustained moods persist.
+  //   4. Gain = 1 + strength * ((uncorroborated - 1) * (1 - C) +
+  //      (corroborated - 1) * C), where strength = 2 * min(mix, 1 - mix).
+  //      At the 50/50 default the cross-check is at full strength; sliding
+  //      toward one channel fades it out (at 0% or 100% only one channel is
+  //      being used, so there's nothing to cross-check against).
+  //
+  // A block with a silent audio channel (a silence-sample marker) is
+  // treated as having no audio elevation of its own, but can still be
+  // corroborated by audio at neighbouring blocks.
+  // ---------------------------------------------------------------------
+  function buildSentimentBlocks(segments) {
+    const blocks = [];          // { a: audio vector|null, v: video vector|null }
+    const blockOf = new Map();  // raw word / silence-sample object -> block index
+    let prevKey = null;
+    segments.forEach((seg) => {
+      if (seg.type === 'words') {
+        seg.words.forEach((w) => {
+          const a = w.audioSentiment || w.sentiment || null;
+          const v = w.videoSentiment || null;
+          // Words in one chunk carry identical copies of the chunk's values,
+          // so consecutive identical (audio, video) pairs are one block.
+          const key = JSON.stringify([a, v]);
+          if (key !== prevKey) { blocks.push({ a, v }); prevKey = key; }
+          blockOf.set(w, blocks.length - 1);
+        });
+      } else if (seg.type === 'silence' && seg.sentimentSamples) {
+        seg.sentimentSamples.forEach((sample) => {
+          blocks.push({ a: null, v: sample });
+          blockOf.set(sample, blocks.length - 1);
+        });
+        prevKey = null;
+      }
+    });
+    return { blocks, blockOf };
+  }
+
+  function channelElevations(blocks, channel) {
+    const out = blocks.map(() => ({}));
+    const calibrated = blocks.map((b) => (b[channel] ? applyCalibration(b[channel]) : null));
+    S.SENTIMENTS.forEach((s) => {
+      const idx = [];
+      const vals = [];
+      calibrated.forEach((c, i) => { if (c) { idx.push(i); vals.push(c[s]); } });
+      if (vals.length === 0) return;
+      const bar = adaptiveElevatedThreshold(vals);
+      const med = median(vals.slice().sort((a, b) => a - b));
+      // Full evidence once a value is as far above the bar as the bar is
+      // above the median (i.e. ~2x the elevated distance), ramping up from 0
+      // at the bar itself. Floored so a degenerate bar can't divide by ~0.
+      const ramp = Math.max(bar - med, S.normalization_elevated_threshold / 2);
+      const frequency = vals.filter((x) => x > bar).length / vals.length;
+      const evidenceWeight = 1 - frequency;
+      idx.forEach((blockIdx, j) => {
+        const above = Math.max(0, Math.min(1, (vals[j] - bar) / ramp));
+        out[blockIdx][s] = above * evidenceWeight;
+      });
+    });
+    return out;
+  }
+
+  function computeCorroboration(segments) {
+    const { blocks, blockOf } = buildSentimentBlocks(segments);
+    const mix = state.config.audioVideoMix / 100;
+    const strength = 2 * Math.min(mix, 1 - mix);
+    if (strength <= 0 || !blocks.some((b) => b.a && b.v)) return null;
+
+    const weights = S.corroboration_proximity_weights || [1, 0.67, 0.33];
+    const lowGain = S.corroboration_uncorroborated_gain != null ? S.corroboration_uncorroborated_gain : 0.4;
+    const highGain = S.corroboration_corroborated_gain != null ? S.corroboration_corroborated_gain : 1.5;
+    const reach = weights.length - 1;
+    const elevA = channelElevations(blocks, 'a');
+    const elevV = channelElevations(blocks, 'v');
+
+    const sameChannelWeight = S.corroboration_same_channel_weight != null ? S.corroboration_same_channel_weight : 0.5;
+
+    // Strongest proximity-weighted elevation of one channel around block i.
+    // excludeSelf skips distance 0, for the same-channel persistence term.
+    const supportAt = (elev, i, s, excludeSelf) => {
+      let best = 0;
+      for (let d = -reach; d <= reach; d++) {
+        if (excludeSelf && d === 0) continue;
+        const j = i + d;
+        if (j < 0 || j >= blocks.length) continue;
+        const val = (elev[j][s] || 0) * weights[Math.abs(d)];
+        if (val > best) best = val;
+      }
+      return best;
+    };
+
+    const gains = blocks.map((_, i) => {
+      const g = {};
+      S.SENTIMENTS.forEach((s) => {
+        const ea = elevA[i][s] || 0;
+        const ev = elevV[i][s] || 0;
+        const cross = Math.max(
+          Math.min(ea, supportAt(elevV, i, s)),
+          Math.min(ev, supportAt(elevA, i, s))
+        );
+        // Persistence: a channel elevated here AND at nearby blocks of its
+        // own suggests a sustained mood. Weaker evidence than cross-channel
+        // agreement (a model's errors are correlated across adjacent chunks
+        // of the same voice/face), hence the < 1 weight. Combined with the
+        // cross-channel term as a probabilistic OR so the result stays in
+        // 0..1 and the two sources show diminishing returns.
+        const persistence = Math.max(
+          Math.min(ea, supportAt(elevA, i, s, true)),
+          Math.min(ev, supportAt(elevV, i, s, true))
+        );
+        const c = 1 - (1 - cross) * (1 - sameChannelWeight * persistence);
+        g[s] = 1 + strength * ((lowGain - 1) * (1 - c) + (highGain - 1) * c);
+      });
+      return g;
+    });
+    return { blockOf, gains };
+  }
+
+  function gainsFor(rawObj) {
+    const c = state.corroboration;
+    if (!c || !rawObj) return null;
+    const i = c.blockOf.get(rawObj);
+    return i == null ? null : c.gains[i];
+  }
+
+  // Everything that turns a word's / silence marker's saved data into the
+  // final 0..1 per-sentiment values handed to the styling engine.
+  function finalSentiment(rawObj, kind) {
+    const mixed = kind === 'word' ? blendAudioVideoSentiment(rawObj) : rawObj;
+    return normalizeSentimentVector(mixed, gainsFor(rawObj));
+  }
+
+  // Recomputes everything derived from the whole file: the per-sentiment
+  // normalization stats and the cross-channel corroboration gains. Called
+  // whenever the transcript is (re)loaded or the Settings change.
+  function refreshSentimentModel(segments) {
+    state.normalizationStats = computeNormalizationStats(segments);
+    state.corroboration = computeCorroboration(segments);
   }
 
   function showTranscriptState(which, message) {
@@ -670,7 +849,7 @@
     span.dataset.start = w.start;
     span.dataset.end = w.end;
 
-    const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(normalizeSentimentVector(blendAudioVideoSentiment(w)), state.config);
+    const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(finalSentiment(w, 'word'), state.config);
     Object.assign(span.style, cssStyle);
     span.style.lineHeight = `${lineHeightEm}em`;
 
@@ -701,7 +880,7 @@
       span.dataset.end = Math.min(t + step, seg.end);
 
       const sentimentAtT = (seg.sentimentSamples && seg.sentimentSamples[Math.floor((t - seg.start) / step)]) || {};
-      const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(normalizeSentimentVector(sentimentAtT), state.config);
+      const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(finalSentiment(sentimentAtT, 'silence'), state.config);
       Object.assign(span.style, cssStyle);
       span.style.lineHeight = `${lineHeightEm}em`;
 
@@ -733,8 +912,7 @@
   // no need to re-run search afterward the way a full render does.
   function restyleTranscriptInPlace() {
     state.wordEls.forEach(({ el: wEl, kind, raw }) => {
-      const rawSentiment = kind === 'word' ? blendAudioVideoSentiment(raw) : raw;
-      const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(normalizeSentimentVector(rawSentiment), state.config);
+      const { cssStyle, lineHeightEm } = StylingEngine.computeWordStyle(finalSentiment(raw, kind), state.config);
       Object.assign(wEl.style, cssStyle);
       wEl.style.lineHeight = `${lineHeightEm}em`;
     });
@@ -756,7 +934,7 @@
     clearTimeout(liveRestyleDebounceTimer);
     liveRestyleDebounceTimer = setTimeout(() => {
       if (!state.analysis || !state.analysis.segments) return;
-      state.normalizationStats = computeNormalizationStats(state.analysis.segments);
+      refreshSentimentModel(state.analysis.segments);
       restyleTranscriptInPlace();
     }, 120);
   }
@@ -1034,7 +1212,7 @@
     // than through the debounce, which exists specifically to smooth out
     // dozens-of-events-per-second slider dragging.
     if (state.analysis && state.analysis.segments) {
-      state.normalizationStats = computeNormalizationStats(state.analysis.segments);
+      refreshSentimentModel(state.analysis.segments);
       restyleTranscriptInPlace();
     }
   }
